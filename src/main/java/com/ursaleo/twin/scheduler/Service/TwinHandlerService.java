@@ -8,23 +8,35 @@ import org.json.JSONException;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
-import java.util.logging.Level;
+
+import static org.apache.commons.lang3.StringUtils.isNumeric;
 
 @Service
 @Slf4j
 public class TwinHandlerService {
 
-    @Value("${endpoints.extractor}")
-    private String extractorEndpoint;
+    @Value("${endpoints.lambda.healthcheck}")
+    public String healthCheckEndpoint;
+
+    @Value("${twin.application.name}")
+    String twinAppName;
+
+    @Value("${extractor.application.port}")
+    int extractorPort;
 
     @Autowired
     private AppSessionRepository appSessionRepository;
@@ -32,39 +44,71 @@ public class TwinHandlerService {
     private final RestTemplate restTemplate = new RestTemplate();
 
     void invokeTwinHealthCheck(JSONArray instanceIds) {
-               // TODO: call healthcheck lambda
 
-        //for each returned health check do,
-        AppSession appSession = new AppSession();
-        appSession.setSessionId(UUID.randomUUID());
-        appSession.setServerIP("192.168.0.1");
-        appSession.setStatus("Alive");
-        //appSession.setPartnerSecureData("secureData");
-        appSession.setStartTime(LocalDateTime.now());
-        //appSession.setEndTime(LocalDateTime.now().plusMinutes(1));
+        try {
+            JSONObject requestObj = new JSONObject();
+            requestObj.put("instance_ids",instanceIds);
 
-        invokeTwinExtractor(appSession);
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+
+            HttpEntity<String> entity = new HttpEntity<>(requestObj.toString(), headers);
+            Thread.sleep(60000);
+            ResponseEntity<String> response = restTemplate.postForEntity(new URI(healthCheckEndpoint),entity , String.class);
+            if(response.getStatusCode().is2xxSuccessful()){
+                JSONArray responseArr = new JSONArray(response.getBody());
+
+                for (int i = 0; i < responseArr.length(); i++) {
+                    JSONObject responseObj = responseArr.getJSONObject(i);
+                    AppSession appSession = new AppSession();
+                    appSession.setSessionId(UUID.randomUUID()); //TODO: should this be the instanceID?
+                    appSession.setServerIP(responseObj.getString("PublicIP"));
+                    appSession.setInstanceID(responseObj.getString("InstanceId"));
+                    //appSession.setPartnerSecureData("secureData");
+                   // appSession.setStartTime(LocalDateTime.parse(responseObj.getString("LaunchTime")));
+                    //appSession.setEndTime(LocalDateTime.now().plusMinutes(1));
+                    invokeTwinExtractor(appSession);
+                }
+
+            }else {
+                log.error("The healthcheck failed for specified Instances {}",instanceIds.toString() );
+            }
+
+        } catch (URISyntaxException | JSONException | InterruptedException e) {
+            log.error(e.getMessage());
+            throw new RuntimeException(e);
+        }
+
+
     }
 
     private void invokeTwinExtractor(AppSession appSession) {
 
-        URI uri = UriComponentsBuilder.fromHttpUrl(extractorEndpoint)
-                .queryParam("appName", "java.exe")
+        /*URI uri = UriComponentsBuilder.fromHttpUrl("http://"+appSession.getServerIP()+":"+extractorPort+"/getPort")
+                .queryParam("appName", twinAppName)
+                .build()
+                .toUri();*/
+
+        URI uri = UriComponentsBuilder.fromHttpUrl("http://54.243.17.13:8080/getPort")//TODO: hardcoded for testing.
+                .queryParam("appName", twinAppName)
                 .build()
                 .toUri();
 
         ResponseEntity<String> responseEntity = restTemplate.getForEntity(uri, String.class);
-        try {
-            JSONObject jsonObject = new JSONObject(responseEntity.getBody());
-            log.info("Received extractor response : {}",jsonObject);
 
-            appSession.setMappedPort(8080);
-            appSession.setTwinVersionId("123456");
+        if(responseEntity.getStatusCode().is2xxSuccessful()){
+
+            String responseString = responseEntity.getBody();
+            int port = isNumeric(responseString) ? Integer.parseInt(responseString) : -1;
+            log.info("Received twin app port {} in the response",port);
+
+            appSession.setMappedPort(port);
+            appSession.setStatus("Alive");
             appSessionRepository.save(appSession);
 
-        } catch (JSONException e) {
-            //TODO: update the twin status as error
-            log.error("Autoscaling Request failed with status code: {}" , responseEntity.getStatusCode());
+        } else {
+            //TODO: update the twin status as error?
+            log.error("Twin extractor API call failed with status {} for instance {}" , responseEntity.getStatusCode(), appSession.getInstanceID());
         }
 
     }
@@ -73,11 +117,11 @@ public class TwinHandlerService {
     public String createTwinStream(JSONObject requestObject) throws JSONException {
 
         List<AppSession> byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(requestObject.getString("twinVersionId"), "Available");
-        String url = "";
+        String url = "dummy url";
         if(byTwinVersionIdAndStatus.isEmpty()){
             //Spawn new instance.
         }else{
-            //TODO create the URL
+            //TODO add partnersecure data and create the URL ex http://13.202.129.194:8011/streaming/webrtc-demo/?server=13.202.129.194
         }
 
         return url;

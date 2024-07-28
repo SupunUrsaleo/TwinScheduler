@@ -12,6 +12,5 @@ public class TwinAvailability {
     private String twinVersionId;
     private int minAvailable;
 
-
 }
 

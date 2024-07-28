@@ -21,7 +21,8 @@ public class AppSession {
     private String serverIP;
     private int mappedPort;
     private String twinVersionId;
-    private String status;
+    private String status; //TODO: this is the instance status, need to add a new twin status.
+    private String instanceID;//TODO: is it ok to add this?
     private String partnerSecureData;
     private LocalDateTime startTime;
     private LocalDateTime endTime;

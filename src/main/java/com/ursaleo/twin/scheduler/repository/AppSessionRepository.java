@@ -8,5 +8,9 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface AppSessionRepository extends JpaRepository<AppSession, UUID> {
 
     List<AppSession> findByTwinVersionIdAndStatus(String twinVersionId, String status);
+
+    List<AppSession> findByStatus(String status);
+
+    AppSession findByInstanceID(String instanceID);
 }
 
