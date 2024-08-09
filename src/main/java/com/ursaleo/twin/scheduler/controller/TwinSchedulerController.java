@@ -5,10 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.net.URI;
 
@@ -20,12 +17,12 @@ public class TwinSchedulerController {
     @Autowired
     TwinHandlerService twinHandlerService;
 
-    @GetMapping("/getTwinStream")
+    @PostMapping("/getTwinStream")
     public String getTwinStream(@RequestBody String requestBody){
 
         try {
             JSONObject requestObject = new JSONObject(requestBody);
-            return twinHandlerService.createTwinStream(requestObject);
+            return twinHandlerService.createTwinStream(requestObject); //TODO: Check if the server is actually available before creating the URL.
 
         } catch (JSONException e) {
             log.error("Error Parsing the request body : {}",requestBody);

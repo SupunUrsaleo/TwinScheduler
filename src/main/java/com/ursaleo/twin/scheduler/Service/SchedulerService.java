@@ -1,11 +1,13 @@
 package com.ursaleo.twin.scheduler.Service;
 
 
+import com.ursaleo.twin.scheduler.config.Status;
 import com.ursaleo.twin.scheduler.model.AppSession;
+import com.ursaleo.twin.scheduler.model.TwinAvailability;
 import com.ursaleo.twin.scheduler.repository.AppSessionRepository;
 import com.ursaleo.twin.scheduler.repository.TwinAvailabilityRepository;
 import jakarta.annotation.PostConstruct;
-import lombok.extern.java.Log;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -20,13 +22,9 @@ import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.time.LocalDateTime;
 import java.util.List;
-import java.util.UUID;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Predicate;
-import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 @Service
@@ -48,9 +46,6 @@ public class SchedulerService {
     @Value("${endpoints.lambda.healthcheck}")
     private String healthCheckEndpoint;
 
-    @Value("${endpoints.autoscale}")
-    private String autoScaleEndpoint;
-
     @Value("${scheduler.healthcheck.fixedRate}")
     private long healthCheckRate;
 
@@ -60,106 +55,45 @@ public class SchedulerService {
     @Value("${scheduler.autoscale.minInstances}")
     private long autoScaleMinInstances;
 
-
-    @Value("${scheduler.autoscale.imageName}")
-    private String autoScaleImageName;
-
     private final RestTemplate restTemplate = new RestTemplate();
 
     @PostConstruct
     public void scheduleTasks() {
-        log.info("Starting schedulers..");
+        log.info("Starting Scheduled Tasks.");
         scheduledExecutorService.scheduleAtFixedRate(this::performAutoScaling, 0, autoScaleRate, TimeUnit.MILLISECONDS);
-        //scheduledExecutorService.scheduleAtFixedRate(this::performHealthCheck, 0, healthCheckRate, TimeUnit.MILLISECONDS); //TODO: do this from the autoscaler.
-    }
-    public void performHealthCheck() {
-        //TODO: should also check if the application inside the instance is up and restart the instance if the server is down.
-        log.info("Starting health check.");
-
-        List<AppSession> aliveInstances = appSessionRepository.findByStatus("Alive");
-        List<String> instanceIds = aliveInstances.stream()
-                .map(AppSession::getInstanceID)
-                .toList();
-
-        if(instanceIds.isEmpty()){
-            return;
-        }
-        JSONObject requestObj = new JSONObject();
-        try {
-            requestObj.put("instance_ids",new JSONArray(instanceIds));
-        ResponseEntity<String> response = restTemplate.postForEntity(new URI(healthCheckEndpoint),requestObj.toString() , String.class); //TODO: modify Healthcheck endpoint to check the application inside the instance and start if its not started. should also return the twinID.
-
-        if(response.getStatusCode().is2xxSuccessful()){
-            JSONArray responseArr = new JSONArray(response.getBody());
-            for (int i = 0; i < responseArr.length(); i++) {
-                JSONObject responseObj = responseArr.getJSONObject(i);
-                AppSession appSession = appSessionRepository.findByInstanceID(responseObj.getString("InstanceId"));
-                appSession.setStatus(responseObj.getString("Status"));
-                appSessionRepository.save(appSession);
-            }
-
-        }else{
-            log.error("Health check failed for instances {}",instanceIds);
-        }
-
-        } catch (JSONException e) {
-            throw new RuntimeException(e);
-        } catch (URISyntaxException e) {
-            throw new RuntimeException(e);
-        }
-
-        aliveInstances.forEach(instance ->{
-            try {
-                String json = restTemplate.getForObject(healthCheckEndpoint, String.class);
-                log.info("Received health check response : "+json);
-
-            } catch (RestClientException e) {
-                log.error("Failed to perform health check", e);
-            }
-
-        });
-
-
-        log.info("End of health check.");
-
+        log.info("Scheduled Tasks Completed.");
     }
 
     public void performAutoScaling() {
 
+        log.info("Starting Twin Autoscaler..");
+        List<TwinAvailability> allTwins = twinAvailabilityRepository.findAll();
 
-        performHealthCheck();
+        allTwins.forEach(twinAvailability -> {
+            JSONArray instancesForCheck = new JSONArray();
+        List<AppSession> aliveInstances = appSessionRepository.findByTwinVersionIdAndStatus(twinAvailability.getTwinVersionId(), Status.AVAILABLE); //TODO: how to handle non alive instances?
+                List<String> instanceIds = aliveInstances.stream()
+                        .map(AppSession::getInstanceID)
+                        .toList();
 
-        log.info("Starting TwinAutoscaler..");
-        try{
-
-            URI uri = UriComponentsBuilder.fromHttpUrl(autoScaleEndpoint)
-                    .queryParam("imageName", autoScaleImageName)
-                    .queryParam("minInstances", autoScaleMinInstances)
-                    .build()
-                    .toUri();
-
-            ResponseEntity<String> response = restTemplate.postForEntity(uri, null, String.class);
-            if (response.getStatusCode().is2xxSuccessful()) {
-                String body = response.getBody();
-                log.info("Response from AutoScaler: " + body);
-
-                JSONObject jsonObject = new JSONObject(body);
-                JSONArray instanceIds = jsonObject.getJSONArray("instanceIds");
-                if(instanceIds.length() > 0){
-                    twinHandlerService.invokeTwinHealthCheck(instanceIds);
+                if(instanceIds.size() < twinAvailability.getMinAvailable()){
+                    try {
+                        instancesForCheck = twinHandlerService.startInstances(twinAvailability.getMinAvailable() - instanceIds.size());
+                    } catch (JSONException e) {
+                        log.error("Error Starting instances for twin version {}. \n {}",twinAvailability.getTwinVersionId(),e.getMessage());
+                    }
                 }else{
-                    log.info("Twin Autoscaling completed, No new instances were spawned.");
+                    instancesForCheck = new JSONArray(
+                            aliveInstances.stream()
+                                    .map(AppSession::getInstanceID)
+                                    .toList()
+                    );
                 }
 
-            } else {
-                log.error("Autoscaling Request failed with status code: " + response.getStatusCode());
-            }
+                twinHandlerService.invokeTwinHealthCheck(instancesForCheck, twinAvailability.getTwinVersionId());
 
-        } catch (RestClientException e) {
-            log.error( "Failed to perform health check", e);
-        } catch (JSONException e) {
-            log.error("Failed to perform Parse result", e);
-        }
+            });
+
         log.info("Twin Autoscaling complete.");
     }
 
