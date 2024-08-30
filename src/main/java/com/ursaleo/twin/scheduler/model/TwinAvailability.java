@@ -11,6 +11,7 @@ public class TwinAvailability {
     @Id
     private String twinVersionId;
     private int minAvailable;
+    private int maxBusy;
 
 }
 

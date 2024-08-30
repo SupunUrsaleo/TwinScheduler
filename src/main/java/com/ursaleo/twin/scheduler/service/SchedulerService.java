@@ -1,4 +1,4 @@
-package com.ursaleo.twin.scheduler.Service;
+package com.ursaleo.twin.scheduler.service;
 
 
 import com.ursaleo.twin.scheduler.config.Status;
@@ -11,21 +11,15 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.json.JSONArray;
 import org.json.JSONException;
-import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.web.util.UriComponentsBuilder;
 
-import java.net.URI;
-import java.net.URISyntaxException;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 @Service
 @Slf4j
@@ -55,8 +49,6 @@ public class SchedulerService {
     @Value("${scheduler.autoscale.minInstances}")
     private long autoScaleMinInstances;
 
-    private final RestTemplate restTemplate = new RestTemplate();
-
     @PostConstruct
     public void scheduleTasks() {
         log.info("Starting Scheduled Tasks.");
@@ -68,11 +60,12 @@ public class SchedulerService {
 
         log.info("Starting Twin Autoscaler..");
         List<TwinAvailability> allTwins = twinAvailabilityRepository.findAll();
-
+//TODO: how to handle different twin instances? using different AMI or changing a config.
         allTwins.forEach(twinAvailability -> {
             JSONArray instancesForCheck = new JSONArray();
-        List<AppSession> aliveInstances = appSessionRepository.findByTwinVersionIdAndStatus(twinAvailability.getTwinVersionId(), Status.AVAILABLE); //TODO: how to handle non alive instances?
-                List<String> instanceIds = aliveInstances.stream()
+        List<AppSession> aliveInstances = appSessionRepository.findByTwinVersionIdAndStatusIn(twinAvailability.getTwinVersionId(), Arrays.asList(Status.AVAILABLE, Status.BUSY)); //TODO: how to handle dead instances?
+            //TODO: DO i need to health check busy instances. currently checking?
+            List<String> instanceIds = aliveInstances.stream()
                         .map(AppSession::getInstanceID)
                         .toList();
 

@@ -1,13 +1,18 @@
 package com.ursaleo.twin.scheduler.controller;
 
-import com.ursaleo.twin.scheduler.Service.TwinHandlerService;
+import com.ursaleo.twin.scheduler.exception.TwinSchedulerException;
+import com.ursaleo.twin.scheduler.service.TwinHandlerService;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.net.URI;
+import java.net.http.HttpResponse;
 
 @RestController
 @Slf4j
@@ -18,16 +23,20 @@ public class TwinSchedulerController {
     TwinHandlerService twinHandlerService;
 
     @PostMapping("/getTwinStream")
-    public String getTwinStream(@RequestBody String requestBody){
+    public ResponseEntity<String> getTwinStream(@RequestBody String requestBody){
 
         try {
             JSONObject requestObject = new JSONObject(requestBody);
-            return twinHandlerService.createTwinStream(requestObject); //TODO: Check if the server is actually available before creating the URL.
+            return new ResponseEntity<>(twinHandlerService.createTwinStream(requestObject), HttpStatus.OK);
 
-        } catch (JSONException e) {
+        } catch (Exception e) {
             log.error("Error Parsing the request body : {}",requestBody);
+            return new ResponseEntity<>(e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
         }
+    }
 
-        return null;
+    @GetMapping("/releaseTwin/{publicIp}")
+    public String releaseTwin(@PathVariable String publicIp){
+        return twinHandlerService.releaseTwin(publicIp);
     }
 }
