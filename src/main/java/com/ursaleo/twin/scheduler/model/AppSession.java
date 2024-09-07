@@ -4,6 +4,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import lombok.Builder;
 import lombok.Data;
 
 
@@ -18,11 +19,12 @@ public class AppSession {
     @GeneratedValue(strategy = GenerationType.AUTO)
     private UUID sessionId;
 
-    private String serverIP;
+    private String serverPublicIP;
+    private String serverPrivateIP;
     private int mappedPort;
     private String twinVersionId;
-    private String status; //TODO: this is the instance status, need to add a new twin status.
-    private String instanceID;//TODO: is it ok to add this?
+    private String status;
+    private String instanceID;
     private String partnerSecureData;
     private LocalDateTime startTime;
     private LocalDateTime endTime;

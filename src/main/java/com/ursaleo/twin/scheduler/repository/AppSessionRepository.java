@@ -9,8 +9,11 @@ public interface AppSessionRepository extends JpaRepository<AppSession, UUID> {
 
     List<AppSession> findByTwinVersionIdAndStatus(String twinVersionId, String status);
 
+    List<AppSession> findByTwinVersionIdAndStatusIn(String twinVersionId, List<String> statuses);
     List<AppSession> findByStatus(String status);
 
     AppSession findByInstanceID(String instanceID);
+
+    AppSession findByServerPublicIP(String serverPublicIP);
 }
 
