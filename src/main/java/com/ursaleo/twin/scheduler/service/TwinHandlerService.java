@@ -178,7 +178,7 @@ public class TwinHandlerService {
         if(byTwinVersionIdAndStatus.isEmpty()){
 
             List<AppSession> busyTwinSessions = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId,Status.BUSY);
-            if(byTwinVersionId.getMaxBusy()==busyTwinSessions.size()){
+            if(byTwinVersionId.getMaxBusy()<=busyTwinSessions.size()){
                 throw new TwinSchedulerException("Max Limit of instances for this Twin version is reached. No new instances will be spawned.");
             }
             //Spawn new instance.

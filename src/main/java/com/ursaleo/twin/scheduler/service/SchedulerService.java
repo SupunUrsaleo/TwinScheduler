@@ -82,7 +82,8 @@ public class SchedulerService {
                     .forEach(instancesForCheck::put);
 
             // Check if there are fewer alive and starting instances than the minimum required
-            if ((aliveInstances.size() + startingInstances.size()) < twinAvailability.getMinAvailable()) {
+            int nonBusyInstances = aliveInstances.size() + startingInstances.size();
+            if ( (nonBusyInstances < twinAvailability.getMinAvailable()) && (busyInstances.size() < twinAvailability.getMaxBusy())) {
                 try {
                     // Start new instances and get the JSONArray of newly started instance IDs
                     JSONArray newInstances = twinHandlerService.startInstances(twinAvailability.getMinAvailable() - aliveInstances.size());
