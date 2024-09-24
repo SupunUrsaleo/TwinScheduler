@@ -40,4 +40,30 @@ public class TwinSchedulerController {
     public String releaseTwin(@PathVariable String publicIp){
         return twinHandlerService.releaseTwin(publicIp);
     }
+
+    @PostMapping("/shutdown")
+public ResponseEntity<String> shutdownInstance(@RequestBody String requestBody) {
+    try {
+        // Parse the request body to a JSON object
+        JSONObject requestObject = new JSONObject(requestBody);
+
+        // Extract the public_ip from the request
+        String publicIp = requestObject.getString("public_ip");
+
+        // Pass the public_ip to the twinHandlerService (assuming there's a method for this)
+        twinHandlerService.shutdownInstanceByPublicIp(publicIp);
+
+        // Return success response
+        return new ResponseEntity<>("Instance with public IP " + publicIp + " has been shut down.", HttpStatus.OK);
+
+    } catch (JSONException e) {
+        log.error("Error Parsing the request body : {}", requestBody);
+        log.error("Error: {}", e.getMessage());
+        return new ResponseEntity<>("Invalid JSON request body", HttpStatus.BAD_REQUEST);
+    } catch (Exception e) {
+        log.error("Error shutting down the instance for public_ip: {}", e.getMessage());
+        return new ResponseEntity<>(e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+}
+
 }

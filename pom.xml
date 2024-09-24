@@ -71,6 +71,11 @@
 			<artifactId>android-json</artifactId>
 			<version>0.0.20131108.vaadin1</version>
 		</dependency>
+		<dependency>
+			<groupId>com.amazonaws</groupId>
+			<artifactId>aws-java-sdk-ec2</artifactId>
+			<version>1.12.600</version> <!-- You can specify the latest version -->
+		</dependency>
 	</dependencies>
 
 	<build>

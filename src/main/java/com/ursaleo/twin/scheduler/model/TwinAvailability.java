@@ -12,6 +12,7 @@ public class TwinAvailability {
     private String twinVersionId;
     private int minAvailable;
     private int maxBusy;
+    // private int minReserved;
 
 }
 

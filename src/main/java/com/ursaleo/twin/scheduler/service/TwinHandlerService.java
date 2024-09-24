@@ -3,11 +3,14 @@ package com.ursaleo.twin.scheduler.service;
 import com.ursaleo.twin.scheduler.config.Status;
 import com.ursaleo.twin.scheduler.exception.TwinSchedulerException;
 import com.ursaleo.twin.scheduler.model.AppSession;
+import com.ursaleo.twin.scheduler.model.ShutdownPool;
 import com.ursaleo.twin.scheduler.model.TwinAvailability;
 import com.ursaleo.twin.scheduler.repository.AppSessionRepository;
+import com.ursaleo.twin.scheduler.repository.ShutdownPoolRepository;
 import com.ursaleo.twin.scheduler.repository.TwinAvailabilityRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+// import org.apache.logging.log4j.CloseableThreadContext.Instance;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -22,6 +25,14 @@ import java.net.URI;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.Set;
+
+import com.amazonaws.services.ec2.model.DescribeInstancesRequest;
+import com.amazonaws.services.ec2.model.DescribeInstancesResult;
+import com.amazonaws.services.ec2.model.Reservation;
+import com.amazonaws.services.ec2.model.Instance;
+import com.amazonaws.services.ec2.AmazonEC2;
+import com.amazonaws.services.ec2.AmazonEC2ClientBuilder;
 
 @Service
 @Slf4j
@@ -42,14 +53,32 @@ public class TwinHandlerService {
     @Value("${endpoints.autoscale}")
     private String autoScaleEndpoint;
 
+    @Value("${endpoints.autostart}")
+    private String autoStartEndpoint;
+
+    @Value("${endpoints.autostop}")
+    private String autoStopEndpoint;
+
+    @Value("${endpoints.statecheck}")
+    private String stateCheckerEndpoint;
+
+    @Value("${endpoints.autoterminate}")
+    private String autoTerminateEndpoint;
+
     @Value("${scheduler.autoscale.imageName}")
     private String autoScaleImageName;
+
+    @Value("${scheduler.autostart.minShutdownInstances}")
+    private int autoStartMinShutdownInstances;
 
     @Autowired
     private AppSessionRepository appSessionRepository;
 
     @Autowired
     private TwinAvailabilityRepository twinAvailabilityRepository;
+
+    @Autowired
+    private ShutdownPoolRepository shutdownPoolRepository;
 
     private final RestTemplate restTemplate = new RestTemplate();
 
@@ -107,6 +136,50 @@ public class TwinHandlerService {
         }
     }
 
+    public void invokeTwinStoppedCheck(JSONArray instancesForCheckStopped) throws JSONException {
+        JSONArray failedInstances = new JSONArray();  // For instances that fail the process
+        
+        for (int i = 0; i < instancesForCheckStopped.length(); i++) {
+            String instanceId = instancesForCheckStopped.getString(i);
+            
+            // Check if the instance already exists in the ShutdownPool table
+            ShutdownPool shutdownPool = shutdownPoolRepository.findByInstanceId(instanceId);
+    
+            if (shutdownPool == null) {
+                // If the entry doesn't exist, create a new one
+                shutdownPool = new ShutdownPool();
+                shutdownPool.setInstanceId(instanceId);
+            }
+    
+            // Check the current status of the instance
+            String currentStatus = checkInstanceState(instanceId);  // This method will check the current state via Lambda or local method
+    
+            // Handle different statuses
+            if ("stopping".equalsIgnoreCase(currentStatus) || "stopped".equalsIgnoreCase(currentStatus)) {
+                log.info("Instance {} is stopping, adding it to ShutdownPool", instanceId);
+                shutdownPool.setStatus(currentStatus);  // Set the status to "stopping" or "stopped"
+                // Save or update the ShutdownPool entry in the database
+                shutdownPoolRepository.save(shutdownPool);
+            } else if ("starting".equalsIgnoreCase(currentStatus)  || "running".equalsIgnoreCase(currentStatus)) {
+                log.info("Instance {} is staring, removing it from ShutdownPool", instanceId);
+                // Remove the instance from the ShutdownPool table if it's in the "running" state
+                shutdownPoolRepository.delete(shutdownPool);
+            } else if ("shutting-down".equalsIgnoreCase(currentStatus) || "terminated".equalsIgnoreCase(currentStatus)) {
+                log.info("Instance {} is shutting down or terminated, removing it from ShutdownPool", instanceId);
+                // Remove the instance from the ShutdownPool table if it's in the "shutting-down" or "terminated" state
+                shutdownPoolRepository.delete(shutdownPool);
+            } else {
+                log.error("Instance {} has an invalid status: {}", instanceId, currentStatus);
+                failedInstances.put(instanceId);  // Log instances with invalid status
+                continue;
+            }
+        }
+    
+        if (failedInstances.length() > 0) {
+            log.error("Failed to update instances: {}", failedInstances.toString());
+        }
+    }
+    
 
     private void updateAllAppSessions(String twinVersionId, JSONArray responseArr) throws JSONException {
         JSONArray failedInstances = new JSONArray(); //TODO: if the instance is dead no use keeping it. shut them down
@@ -142,7 +215,7 @@ public class TwinHandlerService {
                 appSession.setMappedPort(Integer.parseInt(port));
             } else {
                 appSession.setStatus(Status.STARTING);
-            }
+            }            
 
             appSessionRepository.save(appSession);
         }
@@ -261,4 +334,195 @@ public class TwinHandlerService {
             return "IP not found.";
         }
     }
+
+    public JSONArray startEC2Instances(JSONArray instanceIds) throws JSONException {
+        // Convert JSONArray of instanceIds into a query parameter or pass as body (depending on your API design)
+        ResponseEntity<String> response = restTemplate.postForEntity(getAutoStartURI(instanceIds), null, String.class);
+        JSONArray newInstances = new JSONArray();
+    
+        if (response.getStatusCode().is2xxSuccessful()) {
+            String body = response.getBody();
+            log.info("Response from AutoStart Lambda: {}", body);
+            
+            // Directly convert the body to JSONArray (since that's what your Lambda is returning)
+            newInstances = new JSONArray(body);
+        } else {
+            log.error("AutoStart Request failed with status code: " + response.getStatusCode());
+        }
+        return newInstances;
+    }
+    
+
+    public URI getAutoStartURI(JSONArray instanceIds) throws JSONException {
+        UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(autoStartEndpoint);
+    
+        // Join the instanceIds into a comma-separated string
+        StringBuilder instanceIdParam = new StringBuilder();
+        for (int i = 0; i < instanceIds.length(); i++) {
+            if (i > 0) {
+                instanceIdParam.append(",");
+            }
+            instanceIdParam.append(instanceIds.getString(i));
+        }
+    
+        // Add the comma-separated instanceId string as a single query parameter
+        builder.queryParam("instanceId", instanceIdParam.toString());
+    
+        return builder.build().toUri();
+    }
+    
+    public JSONArray stopEC2Instances(JSONArray instanceIds) throws JSONException {
+        // Convert JSONArray of instanceIds into a query parameter or pass as body (depending on your API design)
+        ResponseEntity<String> response = restTemplate.postForEntity(getAutoStopURI(instanceIds), null, String.class);
+        JSONArray stoppedInstances = new JSONArray();
+    
+        if (response.getStatusCode().is2xxSuccessful()) {
+            String body = response.getBody();
+            log.info("Response from AutoStop Lambda: {}", body);
+            
+            // Directly convert the body to JSONArray (since that's what your Lambda is returning)
+            stoppedInstances = new JSONArray(body);
+        } else {
+            log.error("AutoStop Request failed with status code: " + response.getStatusCode());
+        }
+        return stoppedInstances;
+    }
+    
+    public URI getAutoStopURI(JSONArray instanceIds) throws JSONException {
+        UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(autoStopEndpoint);
+    
+        // Join the instanceIds into a comma-separated string
+        StringBuilder instanceIdParam = new StringBuilder();
+        for (int i = 0; i < instanceIds.length(); i++) {
+            if (i > 0) {
+                instanceIdParam.append(",");
+            }
+            instanceIdParam.append(instanceIds.getString(i));
+        }
+    
+        // Add the comma-separated instanceId string as a single query parameter
+        builder.queryParam("instanceId", instanceIdParam.toString());
+    
+        return builder.build().toUri();
+    }
+
+    public String checkInstanceState(String instanceId) throws JSONException {
+        // Build the URI for the state-checking Lambda
+        URI uri = getInstanceStateURI(instanceId);
+        
+        // Send the request to the Lambda and get the response
+        ResponseEntity<String> response = restTemplate.getForEntity(uri, String.class);
+        
+        if (response.getStatusCode().is2xxSuccessful()) {
+            String body = response.getBody();
+            log.info("Response from EC2StateChecker Lambda: {}", body);
+            
+            // Convert the response body to a JSON object to extract the instance state
+            JSONArray responseArray = new JSONArray(body);
+            if (responseArray.length() > 0) {
+                JSONObject instanceData = responseArray.getJSONObject(0);
+                String state = instanceData.getString("state");  // Extract the 'state' field from JSON
+                
+                return state;
+            } else {
+                log.error("No state information found for instance {}", instanceId);
+                return "unknown";
+            }
+        } else {
+            log.error("EC2StateChecker Lambda Request failed with status code: {}", response.getStatusCode());
+            return "unknown";
+        }
+    }
+    
+    public URI getInstanceStateURI(String instanceId) {
+        UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(stateCheckerEndpoint);
+        
+        // Add the instanceId as a query parameter
+        builder.queryParam("instanceId", instanceId);
+        
+        return builder.build().toUri();
+    }
+
+    public void shutdownInstanceByPublicIp(String publicIp) {
+        try {
+            // Step 1: Retrieve the instanceId from the appSession table using the publicIp
+            AppSession appSession = appSessionRepository.findByServerPublicIP(publicIp);
+    
+            if (appSession == null) {
+                log.error("No appSession found for public IP: {}", publicIp);
+                return;
+            }
+    
+            String instanceId = appSession.getInstanceID();
+            log.info("Found instance ID {} for public IP {}", instanceId, publicIp);
+    
+            // Step 2: Check the number of shutdown instances in the ShutdownPool
+            List<ShutdownPool> shutdownInstances = shutdownPoolRepository.findByStatus(Status.STOPPED); //have to add stopping state
+    
+            if (shutdownInstances.size() >= autoStartMinShutdownInstances) {
+                // If min_reserved shutdown instances are already present, terminate the instance
+                log.info("Min reserved shutdown instances reached. Terminating instance ID {}", instanceId);
+                
+                // Call the Lambda to terminate the instance (you'll need to implement this Lambda)
+                JSONArray instanceIds = new JSONArray();
+                instanceIds.put(instanceId);
+                terminateEC2Instances(instanceIds);
+    
+            } else {
+                // Otherwise, stop the instance and add it to the ShutdownPool
+                log.info("Stopping instance ID {} and adding it to ShutdownPool", instanceId);
+    
+                // Stop the instance
+                JSONArray instanceIds = new JSONArray();
+                instanceIds.put(instanceId);
+                stopEC2Instances(instanceIds);  // Call the method to stop the instance
+    
+                // Add to ShutdownPool
+                JSONArray instancesForCheckStopped = new JSONArray();
+                instancesForCheckStopped.put(instanceId);
+    
+                // Invoke the twin stop check to update the ShutdownPool
+                invokeTwinStoppedCheck(instancesForCheckStopped);
+            }
+    
+        } catch (Exception e) {
+            log.error("Error shutting down the instance for public IP {}: {}", publicIp, e.getMessage());
+        }
+    }
+
+    public JSONArray terminateEC2Instances(JSONArray instanceIds) throws JSONException {
+        // Convert JSONArray of instanceIds into a query parameter or pass as body (depending on your API design)
+        ResponseEntity<String> response = restTemplate.postForEntity(getAutoTerminateURI(instanceIds), null, String.class);
+        JSONArray terminatedInstances = new JSONArray();
+    
+        if (response.getStatusCode().is2xxSuccessful()) {
+            String body = response.getBody();
+            log.info("Response from AutoTerminate Lambda: {}", body);
+            
+            // Directly convert the body to JSONArray (since that's what your Lambda is returning)
+            terminatedInstances = new JSONArray(body);
+        } else {
+            log.error("AutoTerminate Request failed with status code: " + response.getStatusCode());
+        }
+        return terminatedInstances;
+    }
+    
+    public URI getAutoTerminateURI(JSONArray instanceIds) throws JSONException {
+        UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(autoTerminateEndpoint);
+    
+        // Join the instanceIds into a comma-separated string
+        StringBuilder instanceIdParam = new StringBuilder();
+        for (int i = 0; i < instanceIds.length(); i++) {
+            if (i > 0) {
+                instanceIdParam.append(",");
+            }
+            instanceIdParam.append(instanceIds.getString(i));
+        }
+    
+        // Add the comma-separated instanceId string as a single query parameter
+        builder.queryParam("instanceId", instanceIdParam.toString());
+    
+        return builder.build().toUri();
+    } 
+
 }

@@ -10,4 +10,6 @@ public class Status {
     public static final String AVAILABLE = "Available";
     public static final String BUSY = "Busy";
     public static final String DEAD = "Dead";
+    public static final String STOPPED = "stopped";
+    public static final String STOPPING = "stopping";
 }
