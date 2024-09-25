@@ -232,6 +232,7 @@ public class TwinHandlerService {
             AppSession appSession = appSessionRepository.findByInstanceID(instanceID);
             if(Objects.nonNull(appSession)){
                 appSession.setStatus(Status.DEAD);
+                log.info("Updated as dead {}",instanceID);
                 appSessionRepository.save(appSession);
             }//TODO: what if the lambda fails? how should we handle it.
         }
@@ -457,25 +458,29 @@ public class TwinHandlerService {
             log.info("Found instance ID {} for public IP {}", instanceId, publicIp);
     
             // Step 2: Check the number of shutdown instances in the ShutdownPool
-            List<ShutdownPool> shutdownInstances = shutdownPoolRepository.findByStatus(Status.STOPPED); //have to add stopping state
+            List<ShutdownPool> shutdownInstances = shutdownPoolRepository.findByStatus(Status.STOPPED); // Also add stopping state if necessary
+    
+            JSONArray instanceIds = new JSONArray();
+            instanceIds.put(instanceId);
     
             if (shutdownInstances.size() >= autoStartMinShutdownInstances) {
                 // If min_reserved shutdown instances are already present, terminate the instance
                 log.info("Min reserved shutdown instances reached. Terminating instance ID {}", instanceId);
-                
-                // Call the Lambda to terminate the instance (you'll need to implement this Lambda)
-                JSONArray instanceIds = new JSONArray();
-                instanceIds.put(instanceId);
-                terminateEC2Instances(instanceIds);
+    
+                // Call the Lambda to terminate the instance
+                // terminateEC2Instances(instanceIds);
+    
+                // Mark the app session as dead after termination
+                appSession.setStatus(Status.DEAD);
+                appSessionRepository.save(appSession);
+                log.info("AppSession for instance ID {} has been updated to DEAD after termination.", instanceId);
     
             } else {
                 // Otherwise, stop the instance and add it to the ShutdownPool
                 log.info("Stopping instance ID {} and adding it to ShutdownPool", instanceId);
     
                 // Stop the instance
-                JSONArray instanceIds = new JSONArray();
-                instanceIds.put(instanceId);
-                stopEC2Instances(instanceIds);  // Call the method to stop the instance
+                // stopEC2Instances(instanceIds);  // Call the method to stop the instance
     
                 // Add to ShutdownPool
                 JSONArray instancesForCheckStopped = new JSONArray();
@@ -483,6 +488,11 @@ public class TwinHandlerService {
     
                 // Invoke the twin stop check to update the ShutdownPool
                 invokeTwinStoppedCheck(instancesForCheckStopped);
+    
+                // Mark the app session as dead after stopping
+                appSession.setStatus(Status.DEAD);
+                appSessionRepository.save(appSession);
+                log.info("AppSession for instance ID {} has been updated to DEAD after stopping.", instanceId);
             }
     
         } catch (Exception e) {
