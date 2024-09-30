@@ -149,6 +149,7 @@ public class SchedulerService {
 
         List<ShutdownPool> stoppedInstances = shutdownPoolRepository.findByStatus(Status.STOPPED);
         List<ShutdownPool> stoppingInstances = shutdownPoolRepository.findByStatus(Status.STOPPING);
+        List<ShutdownPool> startedInstances = shutdownPoolRepository.findByStatus(Status.STARTED);
 
         stoppedInstances.stream()
         .map(ShutdownPool::getInstanceId)
@@ -156,8 +157,12 @@ public class SchedulerService {
 
         stoppingInstances.stream()
         .map(ShutdownPool::getInstanceId)
-        .forEach(instancesForCheckStopped::put); 
-        
+        .forEach(instancesForCheckStopped::put);
+
+        startedInstances.stream()
+        .map(ShutdownPool::getInstanceId)
+        .forEach(instancesForCheckStopped::put);
+
         JSONArray instanceIds = new JSONArray();
         if (stoppedInstances.size() + stoppingInstances.size() < autoStartMinShutdownInstances) {
             try {

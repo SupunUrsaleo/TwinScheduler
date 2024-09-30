@@ -155,25 +155,30 @@ public class TwinHandlerService {
             String currentStatus = checkInstanceState(instanceId);  // This method will check the current state via Lambda or local method
     
             // Handle different statuses
-            if ("stopping".equalsIgnoreCase(currentStatus) || "stopped".equalsIgnoreCase(currentStatus)) {
+            if ("stopping".equalsIgnoreCase(currentStatus)) {
                 log.info("Instance {} is stopping, adding it to ShutdownPool", instanceId);
-                shutdownPool.setStatus(currentStatus);  // Set the status to "stopping" or "stopped"
-                // Save or update the ShutdownPool entry in the database
+                shutdownPool.setStatus(Status.STOPPING);  // Set the status to "stopping" or "stopped"
                 shutdownPoolRepository.save(shutdownPool);
-            } else if ("starting".equalsIgnoreCase(currentStatus)  || "running".equalsIgnoreCase(currentStatus)) {
-                log.info("Instance {} is staring, removing it from ShutdownPool", instanceId);
-                // Remove the instance from the ShutdownPool table if it's in the "running" state
-                shutdownPoolRepository.delete(shutdownPool);
+            } else if ("stopped".equalsIgnoreCase(currentStatus)) {
+                log.info("Instance {} is stopping, adding it to ShutdownPool", instanceId);
+                shutdownPool.setStatus(Status.STOPPED);  // Set the status to "stopping" or "stopped"
+                shutdownPoolRepository.save(shutdownPool);
+            } else if ("pending".equalsIgnoreCase(currentStatus)  || "running".equalsIgnoreCase(currentStatus)) {
+                log.info("Instance {} is started from ShutdownPool", instanceId);
+                shutdownPool.setStatus(Status.STARTED); 
+                shutdownPoolRepository.save(shutdownPool);
             } else if ("shutting-down".equalsIgnoreCase(currentStatus) || "terminated".equalsIgnoreCase(currentStatus)) {
-                log.info("Instance {} is shutting down or terminated, removing it from ShutdownPool", instanceId);
-                // Remove the instance from the ShutdownPool table if it's in the "shutting-down" or "terminated" state
-                shutdownPoolRepository.delete(shutdownPool);
+                log.info("Instance {} is shutting down or terminated, dead it from ShutdownPool", instanceId);
+                shutdownPool.setStatus(Status.DEAD);
+                shutdownPoolRepository.save(shutdownPool); 
             } else {
                 log.error("Instance {} has an invalid status: {}", instanceId, currentStatus);
                 failedInstances.put(instanceId);  // Log instances with invalid status
                 continue;
             }
         }
+                // //If we want to Remove the instance from the ShutdownPool table
+                // shutdownPoolRepository.delete(shutdownPool);
     
         if (failedInstances.length() > 0) {
             log.error("Failed to update instances: {}", failedInstances.toString());
@@ -238,36 +243,135 @@ public class TwinHandlerService {
         }
     }
 
+    // public String createTwinStream(JSONObject requestObject) throws JSONException {
+
+    //     String twinVersionId = requestObject.getString("twinVersionId");
+    //     String partnerSecureData = requestObject.getString("data");
+    //     TwinAvailability byTwinVersionId = twinAvailabilityRepository.findByTwinVersionId(twinVersionId);
+    //     if(Objects.isNull(byTwinVersionId)){
+    //         throw new TwinSchedulerException("No defined Twin version id found.");
+    //     }
+
+    //     List<AppSession> byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
+    //     String url = "Could not Create URL, Please try again later.";
+    //     if(byTwinVersionIdAndStatus.isEmpty()){
+
+    //         List<AppSession> busyTwinSessions = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId,Status.BUSY);
+    //         if(byTwinVersionId.getMaxBusy()<=busyTwinSessions.size()){
+    //             throw new TwinSchedulerException("Max Limit of instances for this Twin version is reached. No new instances will be spawned.");
+    //         }
+    //         //Spawn new instance.
+    //         JSONArray newInstanceArr = startInstances(1);
+    //         invokeTwinHealthCheck(newInstanceArr, twinVersionId);
+    //         byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
+    //         if(!byTwinVersionIdAndStatus.isEmpty()){
+    //             url = getStreamUrl(byTwinVersionIdAndStatus.get(0), partnerSecureData);
+    //         }
+    //     }else{
+    //         url = getStreamUrl(byTwinVersionIdAndStatus.get(0), partnerSecureData);
+    //     }
+
+    //     return url;
+    // }
+
     public String createTwinStream(JSONObject requestObject) throws JSONException {
 
         String twinVersionId = requestObject.getString("twinVersionId");
         String partnerSecureData = requestObject.getString("data");
         TwinAvailability byTwinVersionId = twinAvailabilityRepository.findByTwinVersionId(twinVersionId);
-        if(Objects.isNull(byTwinVersionId)){
+        if (Objects.isNull(byTwinVersionId)) {
             throw new TwinSchedulerException("No defined Twin version id found.");
         }
 
+        // Retrieve available instances by twinVersionId
         List<AppSession> byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
         String url = "Could not Create URL, Please try again later.";
-        if(byTwinVersionIdAndStatus.isEmpty()){
 
-            List<AppSession> busyTwinSessions = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId,Status.BUSY);
-            if(byTwinVersionId.getMaxBusy()<=busyTwinSessions.size()){
+        // If no available instances, try to start one from the shutdown pool
+        if (byTwinVersionIdAndStatus.isEmpty()) {
+
+            // Retrieve busy twin sessions
+            List<AppSession> busyTwinSessions = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.BUSY);
+
+            // Check if max busy instances limit has been reached
+            if (byTwinVersionId.getMaxBusy() <= busyTwinSessions.size()) {
                 throw new TwinSchedulerException("Max Limit of instances for this Twin version is reached. No new instances will be spawned.");
             }
-            //Spawn new instance.
-            JSONArray newInstanceArr = startInstances(1);
-            invokeTwinHealthCheck(newInstanceArr, twinVersionId);
-            byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
-            if(!byTwinVersionIdAndStatus.isEmpty()){
-                url = getStreamUrl(byTwinVersionIdAndStatus.get(0), partnerSecureData);
+
+            // Get one instance from the ShutdownPool
+            List<ShutdownPool> stoppedInstances = shutdownPoolRepository.findByStatus(Status.STOPPED);
+
+            if (!stoppedInstances.isEmpty()) {
+                // Get the first available instance from the stopped pool
+                ShutdownPool selectedInstance = stoppedInstances.get(0);
+                String instanceId = selectedInstance.getInstanceId();
+
+                // Immediately update the status to 'STARTING' to lock the instance
+                selectedInstance.setStatus(Status.STARTED);
+                shutdownPoolRepository.save(selectedInstance);  // Save the status update
+                // shutdownPoolRepository.delete(selectedInstance);
+
+                JSONArray instancesToStartArray = new JSONArray();
+                instancesToStartArray.put(instanceId);
+
+                log.info("Starting instance {} from StoppedInstanceIds", instanceId);
+
+                // Start the selected instance
+                JSONArray startedInstances = startEC2Instances(instancesToStartArray);
+
+                // Call the health check after starting the instance
+                invokeTwinHealthCheck(instancesToStartArray, twinVersionId);  // Call health check
+
+                // // Log the status of the started instance
+                // if (startedInstances.length() > 0) {
+                //     JSONObject instance = startedInstances.getJSONObject(0);
+                //     log.info("Started EC2 instance: instanceId={}, status={}", instance.getString("instanceId"), instance.getString("status"));
+                //     byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
+                // }
+
+                            // Retry mechanism: wait and check if the instance is available
+                int maxRetries = 20;  // Maximum retries (e.g., wait for 30 seconds total with 5-second intervals)
+                int retryCount = 0;
+                while (retryCount < maxRetries) {
+                    log.info("Checking for available instance (attempt {})...", retryCount + 1);
+                    byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
+                    if (!byTwinVersionIdAndStatus.isEmpty()) {
+                        log.info("Instance is now available.");
+                        break;
+                    }
+                    retryCount++;
+                    try {
+                        Thread.sleep(10000);  // Wait for 5 seconds before retrying
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new TwinSchedulerException("Interrupted while waiting for instance to become available.");
+                    }
+                }
+
+                // Check if an available instance is present after starting
+                if (!byTwinVersionIdAndStatus.isEmpty()) {
+                    url = getStreamUrl(byTwinVersionIdAndStatus.get(0), partnerSecureData);
+                } else {
+                    throw new TwinSchedulerException("No available instances found after starting stopped instance.");
+                }
+            } else {
+                // If no stopped instances are available, fallback to spawning a new instance
+                log.info("No stopped instances available, spawning a new one.");
+                JSONArray newInstanceArr = startInstances(1);  // Start one new instance
+                invokeTwinHealthCheck(newInstanceArr, twinVersionId);
+                byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
+                if (!byTwinVersionIdAndStatus.isEmpty()) {
+                    url = getStreamUrl(byTwinVersionIdAndStatus.get(0), partnerSecureData);
+                }
             }
-        }else{
+        } else {
+            // If available instances are found, use the first one
             url = getStreamUrl(byTwinVersionIdAndStatus.get(0), partnerSecureData);
         }
 
         return url;
     }
+
 
     private String getStreamUrl(AppSession appSession, String partnerSecureData) {
         String serverPublicIP = appSession.getServerPublicIP();
@@ -469,6 +573,8 @@ public class TwinHandlerService {
     
                 // Call the Lambda to terminate the instance
                 // terminateEC2Instances(instanceIds);
+                // Stop the instance
+                stopEC2Instances(instanceIds);  // Call the method to stop the instance
     
                 // Mark the app session as dead after termination
                 appSession.setStatus(Status.DEAD);
@@ -480,7 +586,7 @@ public class TwinHandlerService {
                 log.info("Stopping instance ID {} and adding it to ShutdownPool", instanceId);
     
                 // Stop the instance
-                // stopEC2Instances(instanceIds);  // Call the method to stop the instance
+                stopEC2Instances(instanceIds);  // Call the method to stop the instance
     
                 // Add to ShutdownPool
                 JSONArray instancesForCheckStopped = new JSONArray();
