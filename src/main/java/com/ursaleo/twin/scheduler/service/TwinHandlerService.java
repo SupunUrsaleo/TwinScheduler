@@ -559,7 +559,7 @@ public class TwinHandlerService {
             }
 
             // Ensure shutdown only happens if appSession status is BUSY
-            if (appSession.getStatus() != Status.BUSY) {
+            if (!appSession.getStatus().equals(Status.BUSY)) {
                 log.info("AppSession for public IP {} is not in BUSY status. Shutdown skipped.", publicIp);
                 return;
             }
