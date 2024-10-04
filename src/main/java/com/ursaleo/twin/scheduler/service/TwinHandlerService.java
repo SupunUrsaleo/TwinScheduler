@@ -453,7 +453,13 @@ public class TwinHandlerService {
                 log.error("No appSession found for public IP: {}", publicIp);
                 return;
             }
-    
+
+            // Ensure shutdown only happens if appSession status is BUSY
+            if (appSession.getStatus() != Status.BUSY) {
+                log.info("AppSession for public IP {} is not in BUSY status. Shutdown skipped.", publicIp);
+                return;
+            }
+
             String instanceId = appSession.getInstanceID();
             log.info("Found instance ID {} for public IP {}", instanceId, publicIp);
     
