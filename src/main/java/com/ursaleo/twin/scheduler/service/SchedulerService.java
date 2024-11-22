@@ -123,8 +123,10 @@ public class SchedulerService {
 
                     log.info("Starting {} instances from StoppedInstanceIds", instancesToStartArray.length());
 
+                    if(maxInstances > 0){
                     // Start the selected instances
                     JSONArray startedInstances = twinHandlerService.startEC2Instances(instancesToStartArray);
+                    
 
                     // Loop through the started instances and log their status
                     for (int i = 0; i < startedInstances.length(); i++) {
@@ -132,10 +134,29 @@ public class SchedulerService {
                         log.info("Started EC2 instance: instanceId={}, status={}", instance.getString("instanceId"), instance.getString("status"));
                         instancesForCheck.put(instance.getString("instanceId"));
                     }
+                    }
+
+                    if(maxInstances == 0){
+                    JSONArray newInstances = twinHandlerService.startInstances(instancesToStart);
+
+                    // Add each new instance ID from the JSONArray to instancesForCheck
+                    for (int i = 0; i < newInstances.length(); i++) {
+                        instancesForCheck.put(newInstances.get(i));
+                    }
+                    }
 
                 } catch (JSONException e) {
                     log.error("Error starting instances for twin version {}. \n {}", twinAvailability.getTwinVersionId(), e.getMessage());
                 }
+            }
+
+            // Add a delay before calling invokeTwinHealthCheck
+            try {
+                Thread.sleep(1000);  // Adjust delay as needed
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.error("Interrupted while waiting before health check.");
+                // No need to throw an exception if logging is sufficient
             }
 
             // Invoke the twin health check with the merged instancesForCheckStopped
@@ -164,10 +185,11 @@ public class SchedulerService {
         .forEach(instancesForCheckStopped::put);
 
         JSONArray instanceIds = new JSONArray();
-        if (stoppedInstances.size() + stoppingInstances.size() < autoStartMinShutdownInstances) {
+        //this should be (stoppedInstances.size() + stoppingInstances.size() + startedInstances < autoStartMinShutdownInstances)
+        if (stoppedInstances.size() + stoppingInstances.size() + startedInstances.size() < autoStartMinShutdownInstances) {
             try {
                 // Start new instances and get the JSONArray of newly started instance IDs //autoStartMinShutdownInstances = twinAvailability.getMinReserved()
-                JSONArray newInstances = twinHandlerService.startInstances(autoStartMinShutdownInstances - stoppedInstances.size() - stoppingInstances.size());
+                JSONArray newInstances = twinHandlerService.startInstances(autoStartMinShutdownInstances - stoppedInstances.size() - stoppingInstances.size() - startedInstances.size());
                 
                 ExecutorService executorService = Executors.newFixedThreadPool(newInstances.length());
         

@@ -110,6 +110,7 @@ public class TwinHandlerService {
                 ResponseEntity<String> response = restTemplate.postForEntity(new URI(healthCheckEndpoint), entity, String.class);
 
                 if (response.getStatusCode().is2xxSuccessful()) {
+                    log.error("The healthcheck passed for specified Instances {} statuscode: {}", instanceIds.toString(),response.getStatusCode());
                     updateAllAppSessions(twinVersionId, new JSONArray(response.getBody()));
                     return;
                 } else {
@@ -319,9 +320,17 @@ public class TwinHandlerService {
                 // Start the selected instance
                 JSONArray startedInstances = startEC2Instances(instancesToStartArray);
 
+                // Add a delay before calling the health check
+                try {
+                    Thread.sleep(1000); // Wait for 1 seconds (adjust as needed)
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new TwinSchedulerException("Interrupted while waiting for instance to transition states.");
+                }                
+
                 // Call the health check after starting the instance
                 invokeTwinHealthCheck(instancesToStartArray, twinVersionId);  // Call health check
-
+                log.info("Starting invokeTwinHealthCheck for instance {} from StoppedInstanceIds", instanceId);
                 // // Log the status of the started instance
                 // if (startedInstances.length() > 0) {
                 //     JSONObject instance = startedInstances.getJSONObject(0);
@@ -330,7 +339,7 @@ public class TwinHandlerService {
                 // }
 
                             // Retry mechanism: wait and check if the instance is available
-                int maxRetries = 20;  // Maximum retries (e.g., wait for 30 seconds total with 5-second intervals)
+                int maxRetries = 30;  // Maximum retries (e.g., wait for 30 seconds total with 5-second intervals)
                 int retryCount = 0;
                 while (retryCount < maxRetries) {
                     log.info("Checking for available instance (attempt {})...", retryCount + 1);
@@ -380,6 +389,7 @@ public class TwinHandlerService {
         if(status.is2xxSuccessful()){
             String url = String.format("http://%s:%s/streaming/webrtc-demo/?server=%s", serverPublicIP,8011,serverPublicIP);
             appSession.setStatus(Status.BUSY);
+            log.info("Sending Partner Secure Data to : {}",url);
             appSessionRepository.save(appSession);
             return url;
         }
@@ -548,11 +558,77 @@ public class TwinHandlerService {
         return builder.build().toUri();
     }
 
+    // public void shutdownInstanceByPublicIp(String publicIp) {
+    //     try {
+    //         // Step 1: Retrieve the instanceId from the appSession table using the publicIp
+    //         AppSession appSession = appSessionRepository.findByServerPublicIP(publicIp);
+    
+    //         if (appSession == null) {
+    //             log.error("No appSession found for public IP: {}", publicIp);
+    //             return;
+    //         }
+
+    //         // Ensure shutdown only happens if appSession status is BUSY
+    //         if (!appSession.getStatus().equals(Status.BUSY)) {
+    //             log.info("AppSession for public IP {} is not in BUSY status. Shutdown skipped.", publicIp);
+    //             return;
+    //         }
+
+    //         String instanceId = appSession.getInstanceID();
+    //         log.info("Found instance ID {} for public IP {}", instanceId, publicIp);
+    
+    //         // Step 2: Check the number of shutdown instances in the ShutdownPool
+    //         List<ShutdownPool> shutdownInstances = shutdownPoolRepository.findByStatus(Status.STOPPED); // Also add stopping state if necessary
+    
+    //         JSONArray instanceIds = new JSONArray();
+    //         instanceIds.put(instanceId);
+    
+    //         if (shutdownInstances.size() >= autoStartMinShutdownInstances) {
+    //             // If min_reserved shutdown instances are already present, terminate the instance
+    //             log.info("Min reserved shutdown instances reached. Terminating instance ID {}", instanceId);
+    
+    //             // Call the Lambda to terminate the instance
+    //             // terminateEC2Instances(instanceIds);
+
+    //             // Stop the instance but this should be replaced by terminateEC2Instances(instanceIds);
+    //             stopEC2Instances(instanceIds);  // Call the method to stop the instance
+    
+    //             // Mark the app session as dead after termination
+    //             appSession.setStatus(Status.DEAD);
+    //             appSessionRepository.save(appSession);
+    //             log.info("AppSession for instance ID {} has been updated to DEAD after termination.", instanceId);
+    
+    //         } else {
+    //             // Otherwise, stop the instance and add it to the ShutdownPool
+    //             log.info("Stopping instance ID {} and adding it to ShutdownPool", instanceId);
+    
+    //             // Stop the instance
+    //             stopEC2Instances(instanceIds);  // Call the method to stop the instance
+    
+    //             // Add to ShutdownPool
+    //             JSONArray instancesForCheckStopped = new JSONArray();
+    //             instancesForCheckStopped.put(instanceId);
+    
+    //             // Invoke the twin stop check to update the ShutdownPool
+    //             invokeTwinStoppedCheck(instancesForCheckStopped);
+    
+    //             // Mark the app session as dead after stopping
+    //             appSession.setStatus(Status.DEAD);
+    //             appSessionRepository.save(appSession);
+    //             log.info("AppSession for instance ID {} has been updated to DEAD after stopping.", instanceId);
+    //         }
+    
+    //     } catch (Exception e) {
+    //         log.error("Error shutting down the instance for public IP {}: {}", publicIp, e.getMessage());
+    //     }
+    // }
+
+    //shutdownInstanceByPublicIp should be replace by this
     public void shutdownInstanceByPublicIp(String publicIp) {
         try {
             // Step 1: Retrieve the instanceId from the appSession table using the publicIp
             AppSession appSession = appSessionRepository.findByServerPublicIP(publicIp);
-    
+
             if (appSession == null) {
                 log.error("No appSession found for public IP: {}", publicIp);
                 return;
@@ -566,49 +642,45 @@ public class TwinHandlerService {
 
             String instanceId = appSession.getInstanceID();
             log.info("Found instance ID {} for public IP {}", instanceId, publicIp);
-    
-            // Step 2: Check the number of shutdown instances in the ShutdownPool
-            List<ShutdownPool> shutdownInstances = shutdownPoolRepository.findByStatus(Status.STOPPED); // Also add stopping state if necessary
-    
-            JSONArray instanceIds = new JSONArray();
-            instanceIds.put(instanceId);
-    
-            if (shutdownInstances.size() >= autoStartMinShutdownInstances) {
-                // If min_reserved shutdown instances are already present, terminate the instance
-                log.info("Min reserved shutdown instances reached. Terminating instance ID {}", instanceId);
-    
-                // Call the Lambda to terminate the instance
-                // terminateEC2Instances(instanceIds);
+
+            // Step 2: Check if the instance is in the ShutdownPool
+            ShutdownPool shutdownPoolEntry = shutdownPoolRepository.findByInstanceId(instanceId);
+
+            if (shutdownPoolEntry != null) {
+                // Instance is in the ShutdownPool; stop it
+                log.info("Instance ID {} is in the ShutdownPool. Stopping the instance.", instanceId);
+
+                JSONArray instanceIds = new JSONArray();
+                instanceIds.put(instanceId);
+
                 // Stop the instance
-                stopEC2Instances(instanceIds);  // Call the method to stop the instance
-    
-                // Mark the app session as dead after termination
-                appSession.setStatus(Status.DEAD);
-                appSessionRepository.save(appSession);
-                log.info("AppSession for instance ID {} has been updated to DEAD after termination.", instanceId);
-    
-            } else {
-                // Otherwise, stop the instance and add it to the ShutdownPool
-                log.info("Stopping instance ID {} and adding it to ShutdownPool", instanceId);
-    
-                // Stop the instance
-                stopEC2Instances(instanceIds);  // Call the method to stop the instance
-    
-                // Add to ShutdownPool
-                JSONArray instancesForCheckStopped = new JSONArray();
-                instancesForCheckStopped.put(instanceId);
-    
-                // Invoke the twin stop check to update the ShutdownPool
-                invokeTwinStoppedCheck(instancesForCheckStopped);
-    
-                // Mark the app session as dead after stopping
+                stopEC2Instances(instanceIds);
+
+                // Update ShutdownPool status to reflect stopped state
+                shutdownPoolEntry.setStatus(Status.STOPPED);
+                shutdownPoolRepository.save(shutdownPoolEntry);
+
+                // Mark the app session as DEAD
                 appSession.setStatus(Status.DEAD);
                 appSessionRepository.save(appSession);
                 log.info("AppSession for instance ID {} has been updated to DEAD after stopping.", instanceId);
+            } else {
+                // Instance is not in the ShutdownPool; terminate it
+                log.info("Instance ID {} is not in the ShutdownPool. Terminating the instance.", instanceId);
+
+                JSONArray instanceIds = new JSONArray();
+                instanceIds.put(instanceId);
+
+                // Terminate the instance
+                terminateEC2Instances(instanceIds);
+
+                // Mark the app session as DEAD
+                appSession.setStatus(Status.DEAD);
+                appSessionRepository.save(appSession);
+                log.info("AppSession for instance ID {} has been updated to DEAD after termination.", instanceId);
             }
-    
         } catch (Exception e) {
-            log.error("Error shutting down the instance for public IP {}: {}", publicIp, e.getMessage());
+            log.error("Error shutting down or terminating the instance for public IP {}: {}", publicIp, e.getMessage());
         }
     }
 
