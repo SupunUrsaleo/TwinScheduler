@@ -157,19 +157,19 @@ public class TwinHandlerService {
     
             // Handle different statuses
             if ("stopping".equalsIgnoreCase(currentStatus)) {
-                log.info("Instance {} is stopping, adding it to ShutdownPool", instanceId);
+                // log.info("Instance {} is stopping, adding it to ShutdownPool", instanceId);
                 shutdownPool.setStatus(Status.STOPPING);  // Set the status to "stopping" or "stopped"
                 shutdownPoolRepository.save(shutdownPool);
             } else if ("stopped".equalsIgnoreCase(currentStatus)) {
-                log.info("Instance {} is stopping, adding it to ShutdownPool", instanceId);
+                // log.info("Instance {} is stopping, adding it to ShutdownPool", instanceId);
                 shutdownPool.setStatus(Status.STOPPED);  // Set the status to "stopping" or "stopped"
                 shutdownPoolRepository.save(shutdownPool);
             } else if ("pending".equalsIgnoreCase(currentStatus)  || "running".equalsIgnoreCase(currentStatus)) {
-                log.info("Instance {} is started from ShutdownPool", instanceId);
+                // log.info("Instance {} has started from ShutdownPool", instanceId);
                 shutdownPool.setStatus(Status.STARTED); 
                 shutdownPoolRepository.save(shutdownPool);
             } else if ("shutting-down".equalsIgnoreCase(currentStatus) || "terminated".equalsIgnoreCase(currentStatus)) {
-                log.info("Instance {} is shutting down or terminated, dead it from ShutdownPool", instanceId);
+                // log.info("Instance {} is shutting down or terminated, dead it from ShutdownPool", instanceId);
                 shutdownPool.setStatus(Status.DEAD);
                 shutdownPoolRepository.save(shutdownPool); 
             } else {
@@ -329,8 +329,8 @@ public class TwinHandlerService {
                 }                
 
                 // Call the health check after starting the instance
-                invokeTwinHealthCheck(instancesToStartArray, twinVersionId);  // Call health check
                 log.info("Starting invokeTwinHealthCheck for instance {} from StoppedInstanceIds", instanceId);
+                invokeTwinHealthCheck(instancesToStartArray, twinVersionId);  // Call health check
                 // // Log the status of the started instance
                 // if (startedInstances.length() > 0) {
                 //     JSONObject instance = startedInstances.getJSONObject(0);
@@ -339,7 +339,7 @@ public class TwinHandlerService {
                 // }
 
                             // Retry mechanism: wait and check if the instance is available
-                int maxRetries = 30;  // Maximum retries (e.g., wait for 30 seconds total with 5-second intervals)
+                int maxRetries = 10;  // Maximum retries (e.g., wait for 5 minutes total with 30-second intervals)
                 int retryCount = 0;
                 while (retryCount < maxRetries) {
                     log.info("Checking for available instance (attempt {})...", retryCount + 1);
@@ -350,7 +350,7 @@ public class TwinHandlerService {
                     }
                     retryCount++;
                     try {
-                        Thread.sleep(10000);  // Wait for 5 seconds before retrying
+                        Thread.sleep(30000);  // Wait for 5 seconds before retrying
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         throw new TwinSchedulerException("Interrupted while waiting for instance to become available.");
@@ -530,7 +530,7 @@ public class TwinHandlerService {
         
         if (response.getStatusCode().is2xxSuccessful()) {
             String body = response.getBody();
-            log.info("Response from EC2StateChecker Lambda: {}", body);
+            // log.info("Response from EC2StateChecker Lambda: {}", body);
             
             // Convert the response body to a JSON object to extract the instance state
             JSONArray responseArray = new JSONArray(body);
@@ -634,9 +634,9 @@ public class TwinHandlerService {
                 return;
             }
 
-            // Ensure shutdown only happens if appSession status is BUSY
-            if (!appSession.getStatus().equals(Status.BUSY)) {
-                log.info("AppSession for public IP {} is not in BUSY status. Shutdown skipped.", publicIp);
+            // Ensure shutdown only happens if appSession status is BUSY or DEAD
+            if (!appSession.getStatus().equals(Status.BUSY) && !appSession.getStatus().equals(Status.DEAD)) {
+                log.info("AppSession for public IP {} is not in BUSY or DEAD status. Shutdown skipped.", publicIp);
                 return;
             }
 
@@ -663,7 +663,7 @@ public class TwinHandlerService {
                 // Mark the app session as DEAD
                 appSession.setStatus(Status.DEAD);
                 appSessionRepository.save(appSession);
-                log.info("AppSession for instance ID {} has been updated to DEAD after stopping.", instanceId);
+                log.info("AppSession for instance ID {} has been updated to DEAD due to User Inactivity.", instanceId);
             } else {
                 // Instance is not in the ShutdownPool; terminate it
                 log.info("Instance ID {} is not in the ShutdownPool. Terminating the instance.", instanceId);
@@ -677,11 +677,12 @@ public class TwinHandlerService {
                 // Mark the app session as DEAD
                 appSession.setStatus(Status.DEAD);
                 appSessionRepository.save(appSession);
-                log.info("AppSession for instance ID {} has been updated to DEAD after termination.", instanceId);
+                log.info("AppSession for instance ID {} has been updated to DEAD after due to User Inactivity.", instanceId);
             }
         } catch (Exception e) {
             log.error("Error shutting down or terminating the instance for public IP {}: {}", publicIp, e.getMessage());
         }
+        return;
     }
 
     public JSONArray terminateEC2Instances(JSONArray instanceIds) throws JSONException {

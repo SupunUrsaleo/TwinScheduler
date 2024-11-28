@@ -137,8 +137,9 @@ public class SchedulerService {
                     }
 
                     if(maxInstances == 0){
+                    log.info("No enough shutdown pool instances");
                     JSONArray newInstances = twinHandlerService.startInstances(instancesToStart);
-
+                    log.info("Starting new instances. Instances Ids = {}", newInstances);
                     // Add each new instance ID from the JSONArray to instancesForCheck
                     for (int i = 0; i < newInstances.length(); i++) {
                         instancesForCheck.put(newInstances.get(i));
@@ -159,9 +160,17 @@ public class SchedulerService {
                 // No need to throw an exception if logging is sufficient
             }
 
+            // Invoke the twin stop check with the merged instancesForCheckStopped
+            try {
+                twinHandlerService.invokeTwinStoppedCheck(StoppedInstanceIds);
+                log.info("Shutdown Pool checked after {} Twin Autoscaling.", twinAvailability.getTwinVersionId());
+            } catch (JSONException e) {
+                log.error("Error invoking twin stopped check: {}", e.getMessage());
+            }            
+
             // Invoke the twin health check with the merged instancesForCheckStopped
-            twinHandlerService.invokeTwinHealthCheck(instancesForCheck, twinAvailability.getTwinVersionId());   
-            
+            twinHandlerService.invokeTwinHealthCheck(instancesForCheck, twinAvailability.getTwinVersionId()); 
+
             log.info("Twin Autoscaling via {} Twin complete.", twinAvailability.getTwinVersionId());
 
         });
@@ -198,6 +207,11 @@ public class SchedulerService {
                     String instanceId = newInstances.getString(i);
                     instanceIds.put(instanceId);
                     log.info("Created a new Stopped instance {}", instanceId);
+
+                    instancesForCheckStopped.put(instanceId);
+                    
+                    // // Invoke the twin stop check with the merged instancesForCheckStopped
+                    // twinHandlerService.invokeTwinStoppedCheck(instancesForCheckStopped);  
         
                     // Run the state check and stop operation asynchronously
                     CompletableFuture.runAsync(() -> {
@@ -215,10 +229,10 @@ public class SchedulerService {
                                     // Stop the instance
                                     twinHandlerService.stopEC2Instances(instanceIds);  // Implement the method to stop the instance
                                     
-                                    instancesForCheckStopped.put(instanceId);
+                                    // instancesForCheckStopped.put(instanceId);
                                     
                                     // Invoke the twin stop check with the merged instancesForCheckStopped
-                                    twinHandlerService.invokeTwinStoppedCheck(instancesForCheckStopped);  
+                                    // twinHandlerService.invokeTwinStoppedCheck(instancesForCheckStopped);  
 
                                     log.info("Instance {} has been stopped.", instanceId);
                                     isRunning = true;
