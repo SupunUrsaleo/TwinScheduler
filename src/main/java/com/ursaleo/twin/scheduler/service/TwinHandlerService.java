@@ -657,7 +657,7 @@ public class TwinHandlerService {
                 stopEC2Instances(instanceIds);
 
                 // Update ShutdownPool status to reflect stopped state
-                shutdownPoolEntry.setStatus(Status.STOPPED);
+                shutdownPoolEntry.setStatus(Status.STOPPING);
                 shutdownPoolRepository.save(shutdownPoolEntry);
 
                 // Mark the app session as DEAD
