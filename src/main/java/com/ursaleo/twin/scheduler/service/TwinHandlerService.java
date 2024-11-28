@@ -744,7 +744,7 @@ public class TwinHandlerService {
                 // Add the response JSON to the results array
                 shutdownResults.put(new JSONObject(body));
             } else {
-                log.error("Shutdown Pool Adder Lambda request failed for instance {}: {}", instanceId, response.getStatusCode());
+                log.error("Shutdown Pool Adder requested for instance {}: {}", instanceId, response.getStatusCode());
                 shutdownResults.put(new JSONObject()
                         .put("instanceId", instanceId)
                         .put("error", "Request failed with status code: " + response.getStatusCode()));
