@@ -65,6 +65,9 @@ public class TwinHandlerService {
     @Value("${endpoints.autoterminate}")
     private String autoTerminateEndpoint;
 
+    @Value("${endpoints.shutdownpooladder}")
+    private String shutdownPoolEndpoint;
+
     @Value("${scheduler.autoscale.imageName}")
     private String autoScaleImageName;
 
@@ -718,6 +721,43 @@ public class TwinHandlerService {
         builder.queryParam("instanceId", instanceIdParam.toString());
     
         return builder.build().toUri();
-    } 
+    }
+
+    public JSONArray ShutdownPoolAdder(JSONArray instanceIds) throws JSONException {
+    JSONArray shutdownResults = new JSONArray();
+
+    for (int i = 0; i < instanceIds.length(); i++) {
+        String instanceId = instanceIds.getString(i);
+
+        try {
+            // Construct the Lambda API URI with the instanceId as a query parameter
+            String uri = String.format("%s?instanceId=%s", shutdownPoolEndpoint, instanceId);
+
+            // Send the GET request to the Lambda API
+            ResponseEntity<String> response = restTemplate.getForEntity(uri, String.class);
+
+            if (response.getStatusCode().is2xxSuccessful()) {
+                // Parse the response body (assuming it's JSON)
+                String body = response.getBody();
+                log.info("Response from Shutdown Pool Adder Lambda for instance {}: {}", instanceId, body);
+
+                // Add the response JSON to the results array
+                shutdownResults.put(new JSONObject(body));
+            } else {
+                log.error("Shutdown Pool Adder requested for instance {}: {}", instanceId, response.getStatusCode());
+                shutdownResults.put(new JSONObject()
+                        .put("instanceId", instanceId)
+                        .put("error", "Request failed with status code: " + response.getStatusCode()));
+            }
+        } catch (Exception e) {
+            log.error("Error while calling Shutdown Pool Adder Lambda for instance {}: {}", instanceId, e.getMessage());
+            shutdownResults.put(new JSONObject()
+                    .put("instanceId", instanceId)
+                    .put("error", e.getMessage()));
+        }
+    }
+
+    return shutdownResults;
+}
 
 }
