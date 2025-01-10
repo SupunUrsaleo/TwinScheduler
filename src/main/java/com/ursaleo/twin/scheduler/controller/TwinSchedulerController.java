@@ -49,9 +49,13 @@ public ResponseEntity<String> shutdownInstance(@RequestBody String requestBody) 
 
         // Extract the public_ip from the request
         String publicIp = requestObject.getString("public_ip");
+        int port = Integer.parseInt(requestObject.getString("port"));
+
 
         // Pass the public_ip to the twinHandlerService (assuming there's a method for this)
-        twinHandlerService.shutdownInstanceByPublicIp(publicIp);
+        // twinHandlerService.shutdownInstanceByPublicIp(publicIp);
+        twinHandlerService.shutdownInstanceByPublicIpAndPort(publicIp, port);
+        
 
         // Return success response
         return new ResponseEntity<>("Instance with public IP " + publicIp + " has been shut down.", HttpStatus.OK);

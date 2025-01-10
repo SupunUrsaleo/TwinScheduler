@@ -140,6 +140,60 @@ public class TwinHandlerService {
         }
     }
 
+    void invokeContainerHealthCheck(JSONArray containerIds, String twinVersionId) {
+
+        for (int attempt = 1; attempt <= retries; attempt++) {
+            try {
+                JSONObject requestObj = new JSONObject();
+                requestObj.put("container_ids", containerIds);
+    
+                // Prepare payload
+                JSONObject dataObj = new JSONObject();
+                JSONObject partnerSecureDataObj = new JSONObject();
+                JSONObject userDataObj = new JSONObject();
+    
+                userDataObj.put("clientId", "d090e8bd-2e70-4dcc-9162-9f9c0c4090d8");
+                userDataObj.put("twinId", "d4bd9c9c-fe70-407f-ae24-cc669de1f5ae");
+                userDataObj.put("twinVersionId", twinVersionId);
+                userDataObj.put("baseUrl", "https://app.ursaleo.com");
+    
+                partnerSecureDataObj.put("app_data", userDataObj);
+                dataObj.put("partnerSecureData", partnerSecureDataObj);
+                requestObj.put("data", dataObj);
+    
+                HttpHeaders headers = new HttpHeaders();
+                headers.setContentType(MediaType.APPLICATION_JSON);
+    
+                HttpEntity<String> entity = new HttpEntity<>(requestObj.toString(), headers);
+                ResponseEntity<String> response = restTemplate.postForEntity(new URI(healthCheckEndpoint), entity, String.class);
+    
+                if (response.getStatusCode().is2xxSuccessful()) {
+                    log.info("Health check passed for containers {}. Status code: {}", containerIds, response.getStatusCode());
+                    updateAllAppSessions(twinVersionId, new JSONArray(response.getBody()));
+                    return;
+                } else {
+                    log.error("Health check failed for containers {}", containerIds);
+                    updateExistingAppSessions(containerIds);
+                    return;
+                }
+            } catch (Exception e) {
+                log.error("Attempt {} failed: {}", attempt, e.getMessage());
+    
+                if (attempt < retries) {
+                    try {
+                        Thread.sleep(delay);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        log.error("Thread was interrupted during sleep", ie);
+                        return;
+                    }
+                } else {
+                    log.error("All attempts to invoke health check failed.");
+                }
+            }
+        }
+    }
+    
     public void invokeTwinStoppedCheck(JSONArray instancesForCheckStopped) throws JSONException {
         JSONArray failedInstances = new JSONArray();  // For instances that fail the process
         
@@ -194,17 +248,22 @@ public class TwinHandlerService {
         JSONArray failedInstances = new JSONArray(); //TODO: if the instance is dead no use keeping it. shut them down
         for (int i = 0; i < responseArr.length(); i++) {
             JSONObject responseObj = responseArr.getJSONObject(i);
-            String instanceID = responseObj.getString("InstanceId");
+
+            // Extract containerId and derive instanceId
+            String containerId = responseObj.getString("ContainerId"); // Assumes "ContainerId" key exists
+            String instanceId = containerId.split("_")[0]; // Extract the instanceId from containerId
+
             if(!Objects.equals(responseObj.getString("Status"), "running")){
-               failedInstances.put(instanceID);
+               failedInstances.put(instanceId);
                continue;
             }
-            AppSession appSession = appSessionRepository.findByInstanceID(instanceID);
+            AppSession appSession = appSessionRepository.findByContainerID(containerId);
 
             if(Objects.isNull(appSession)){
                 appSession = new AppSession();
                 appSession.setSessionId(UUID.randomUUID());
-                appSession.setInstanceID(instanceID);
+                appSession.setInstanceID(instanceId);
+                appSession.setContainerID(containerId);
             }
             appSession.setServerPublicIP(responseObj.getString("PublicIP"));
             appSession.setServerPrivateIP(responseObj.getString("PrivateIP"));
@@ -224,6 +283,7 @@ public class TwinHandlerService {
                 appSession.setMappedPort(Integer.parseInt(port));
             } else {
                 appSession.setStatus(Status.STARTING);
+                log.info("port {}", port);
             }            
 
             appSessionRepository.save(appSession);
@@ -235,13 +295,13 @@ public class TwinHandlerService {
 
     }
 
-    private void updateExistingAppSessions(JSONArray instanceIDs) throws JSONException {
-        for (int i = 0; i < instanceIDs.length(); i++) {
-            String instanceID = instanceIDs.getString(i);
-            AppSession appSession = appSessionRepository.findByInstanceID(instanceID);
+    private void updateExistingAppSessions(JSONArray instanceIds) throws JSONException {
+        for (int i = 0; i < instanceIds.length(); i++) {
+            String instanceId = instanceIds.getString(i);
+            AppSession appSession = appSessionRepository.findByInstanceID(instanceId);
             if(Objects.nonNull(appSession)){
                 appSession.setStatus(Status.DEAD);
-                log.info("Updated as dead {}",instanceID);
+                log.info("Updated as dead {}",instanceId);
                 appSessionRepository.save(appSession);
             }//TODO: what if the lambda fails? how should we handle it.
         }
@@ -676,6 +736,66 @@ public class TwinHandlerService {
 
                 // Terminate the instance
                 terminateEC2Instances(instanceIds);
+
+                // Mark the app session as DEAD
+                appSession.setStatus(Status.DEAD);
+                appSessionRepository.save(appSession);
+                log.info("AppSession for instance ID {} has been updated to DEAD after due to User Inactivity.", instanceId);
+            }
+        } catch (Exception e) {
+            log.error("Error shutting down or terminating the instance for public IP {}: {}", publicIp, e.getMessage());
+        }
+        return;
+    }
+    public void shutdownInstanceByPublicIpAndPort(String publicIp, int port) {
+        try {
+            // Step 1: Retrieve the instanceId from the appSession table using the publicIp
+            AppSession appSession = appSessionRepository.findByServerPublicIPAndMappedPort(publicIp, port);
+
+            if (appSession == null) {
+                log.error("No appSession found for public IP: {}", publicIp);
+                return;
+            }
+
+            // Ensure shutdown only happens if appSession status is BUSY or DEAD
+            if (!appSession.getStatus().equals(Status.BUSY) && !appSession.getStatus().equals(Status.DEAD)) {
+                log.info("AppSession for public IP {} is not in BUSY or DEAD status. Shutdown skipped.", publicIp);
+                return;
+            }
+
+            String instanceId = appSession.getInstanceID();
+            log.info("Found instance ID {} for public IP {}", instanceId, publicIp);
+
+            // Step 2: Check if the instance is in the ShutdownPool
+            ShutdownPool shutdownPoolEntry = shutdownPoolRepository.findByInstanceId(instanceId);
+
+            if (shutdownPoolEntry != null) {
+                // Instance is in the ShutdownPool; stop it
+                log.info("Instance ID {} is in the ShutdownPool. Stopping the instance.", instanceId);
+
+                JSONArray instanceIds = new JSONArray();
+                instanceIds.put(instanceId);
+
+                // Stop the instance
+                // stopEC2Instances(instanceIds);
+
+                // Update ShutdownPool status to reflect stopped state
+                shutdownPoolEntry.setStatus(Status.STOPPING);
+                shutdownPoolRepository.save(shutdownPoolEntry);
+
+                // Mark the app session as DEAD
+                appSession.setStatus(Status.DEAD);
+                appSessionRepository.save(appSession);
+                log.info("AppSession for instance ID {} has been updated to DEAD due to User Inactivity.", instanceId);
+            } else {
+                // Instance is not in the ShutdownPool; terminate it
+                log.info("Instance ID {} is not in the ShutdownPool. Terminating the instance.", instanceId);
+
+                JSONArray instanceIds = new JSONArray();
+                instanceIds.put(instanceId);
+
+                // Terminate the instance
+                // terminateEC2Instances(instanceIds);
 
                 // Mark the app session as DEAD
                 appSession.setStatus(Status.DEAD);

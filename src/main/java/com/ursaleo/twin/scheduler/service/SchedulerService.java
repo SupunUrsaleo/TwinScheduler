@@ -5,9 +5,11 @@ import com.ursaleo.twin.scheduler.config.Status;
 import com.ursaleo.twin.scheduler.model.AppSession;
 import com.ursaleo.twin.scheduler.model.ShutdownPool;
 import com.ursaleo.twin.scheduler.model.TwinAvailability;
+import com.ursaleo.twin.scheduler.model.ContainerAvailability;
 import com.ursaleo.twin.scheduler.repository.AppSessionRepository;
 import com.ursaleo.twin.scheduler.repository.TwinAvailabilityRepository;
 import com.ursaleo.twin.scheduler.repository.ShutdownPoolRepository;
+import com.ursaleo.twin.scheduler.repository.ContainerAvailabilityRepository;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -46,6 +48,9 @@ public class SchedulerService {
     private ScheduledExecutorService scheduledExecutorService;
 
     @Autowired
+    private ContainerAvailabilityRepository containerAvailabilityRepository;
+
+    @Autowired
     TwinHandlerService twinHandlerService;
 
     @Value("${endpoints.lambda.healthcheck}")
@@ -75,8 +80,70 @@ public class SchedulerService {
         log.info("Starting Twin Autoscaler..");
         List<TwinAvailability> allTwins = twinAvailabilityRepository.findAll();
 
+        int totalMinAvailable = twinAvailabilityRepository.getTotalMinAvailable();
+        log.info("Total minAvailable Sessions: {}", totalMinAvailable);
+
+        JSONArray instancesForCheck2 = new JSONArray();
+
+        int availableSessions = appSessionRepository.countAvailableMachines();
+        log.info("Total available Sessions: {}", availableSessions);
+        int startingSessions = appSessionRepository.countStartingMachines();
+        log.info("Total starting Sessions: {}", startingSessions);
+
+        int totalAvailableContainers = containerAvailabilityRepository.getTotalAvailableContainers();
+        log.info("Total available Containers: {}", totalAvailableContainers);
+
+        
+        try {
+            // Calculate how many more containers are needed
+            int containerDeficit = totalMinAvailable - totalAvailableContainers - availableSessions - startingSessions;
+
+            if (containerDeficit > 0) {
+                // Calculate how many instances to start to meet the deficit
+                int instancesToStart2 = (containerDeficit % 3 == 0) ? (containerDeficit / 3) : (containerDeficit / 3 + 1);
+        
+                log.info("Total instances to start: {}", instancesToStart2);
+        
+                if (instancesToStart2 > 0) {
+                    
+                    // Start new instances
+                    JSONArray newInstances2 = twinHandlerService.startInstances(instancesToStart2);
+                    log.info("Starting new instances. Instances Ids = {}", newInstances2);
+                    
+                    // Add each new instance ID from the JSONArray to instancesForCheck
+                    for (int i = 0; i < newInstances2.length(); i++) {
+                        String instanceId = newInstances2.getString(i);
+                        instancesForCheck2.put(instanceId);
+        
+                        // Create and save a new record in ContainerAvailability
+                        ContainerAvailability containerAvailability = new ContainerAvailability();
+                        containerAvailability.setInstanceId(instanceId);
+                        containerAvailability.setMaxContainers(3);  // Default max containers per instance
+                        containerAvailability.setAvailableContainers(3); // Initially, all are available
+        
+                        containerAvailabilityRepository.save(containerAvailability);
+                        log.info("Added new ContainerAvailability entry for instance {}", instanceId);
+                    }
+                    log.info("Starting new instances. Instances Ids = {}", newInstances2);
+                    // Add a delay before calling invokeTwinHealthCheck
+                    try {
+                        Thread.sleep(1000);  // Adjust delay as needed
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        log.error("Interrupted while waiting before health check.");
+                    }
+        
+                    // Invoke the twin health check
+                    // twinHandlerService.invokeTwinHealthCheck(instancesForCheck2, twinAvailability.getTwinVersionId()); 
+                }
+            }
+        } catch (Exception e) {
+            log.error("Error while starting instances: ", e);
+        }
+        
         allTwins.forEach(twinAvailability -> {
             JSONArray instancesForCheck = new JSONArray();
+            
 
             List<AppSession> aliveInstances = appSessionRepository.findByTwinVersionIdAndStatus(twinAvailability.getTwinVersionId(), Status.AVAILABLE);
             List<AppSession> busyInstances = appSessionRepository.findByTwinVersionIdAndStatus(twinAvailability.getTwinVersionId(), Status.BUSY);
@@ -87,15 +154,15 @@ public class SchedulerService {
             // // List<AppSession> stoppedInstances = appSessionRepository.findByStatus(Status.STOPPED);
             
             aliveInstances.stream()
-                    .map(AppSession::getInstanceID)
+                    .map(AppSession::getContainerID)
                     .forEach(instancesForCheck::put);
 
             startingInstances.stream()
-                    .map(AppSession::getInstanceID)
+                    .map(AppSession::getContainerID)
                     .forEach(instancesForCheck::put);
 
             busyInstances.stream()
-                    .map(AppSession::getInstanceID)
+                    .map(AppSession::getContainerID)
                     .forEach(instancesForCheck::put);
 
             JSONArray StoppedInstanceIds = new JSONArray();
@@ -106,8 +173,9 @@ public class SchedulerService {
             // StoppedInstanceIds.put("i-02177d6722c43485e");
 
             int nonBusyInstances = aliveInstances.size() + startingInstances.size();
-            int instancesToStart = twinAvailability.getMinAvailable() - nonBusyInstances; // Calculate how many instances need to be started
+            // int instancesToStart = twinAvailability.getMinAvailable() - nonBusyInstances; // Calculate how many instances need to be started
 
+            /* 
             if ((nonBusyInstances < twinAvailability.getMinAvailable()) && (busyInstances.size() < twinAvailability.getMaxBusy())) {
                 try {
                     // Limit the number of instances to start based on the calculated value `instancesToStart`
@@ -144,10 +212,81 @@ public class SchedulerService {
                     for (int i = 0; i < newInstances.length(); i++) {
                         instancesForCheck.put(newInstances.get(i));
                     }
-                    }
+                    }            
 
                 } catch (JSONException e) {
                     log.error("Error starting instances for twin version {}. \n {}", twinAvailability.getTwinVersionId(), e.getMessage());
+                }
+            }
+*/
+
+            if ((nonBusyInstances < twinAvailability.getMinAvailable()) && (busyInstances.size() < twinAvailability.getMaxBusy())) {
+                try {
+                    JSONArray containersToStartArray = new JSONArray();
+                    List<ContainerAvailability> availableContainers = containerAvailabilityRepository.findByAvailableContainersGreaterThan(0);
+
+                    int containersNeeded = twinAvailability.getMinAvailable() - nonBusyInstances;
+                    log.info("Total containers needed: {}", containersNeeded);
+
+                    // Assign existing available containers first
+                    for (ContainerAvailability container : availableContainers) {
+                        if (containersNeeded == 0) break; // Stop if enough containers are assigned
+
+                        int available = container.getAvailableContainers();
+                        String instanceId = container.getInstanceId();
+
+                        for (int i = 0; i < available; i++) { // Loop through available containers
+                            if (containersNeeded == 0) break;
+
+                            // Determine container number dynamically
+                            int containerNumber = (container.getMaxContainers() - container.getAvailableContainers()) + 1;
+                            String containerId = instanceId + "_" + containerNumber; // Format: x_1, x_2, x_3
+                            log.info("Assigning container {} from instance {}", containerId, instanceId);
+                            containersToStartArray.put(containerId);
+
+                            // Update container availability
+                            container.setAvailableContainers(container.getAvailableContainers() - 1);
+                            containerAvailabilityRepository.save(container);
+
+                            containersNeeded--;
+                        }
+                    }
+
+                    // If more containers are needed, launch new ones
+                    if (containersNeeded > 0) {
+                        log.info("Not enough available containers, launching new ones.");
+
+                        int instancesToStart = (containersNeeded % 3 == 0) ? (containersNeeded / 3) : (containersNeeded / 3 + 1);
+                        JSONArray newInstances = twinHandlerService.startInstances(instancesToStart);
+
+                        for (int i = 0; i < newInstances.length(); i++) {
+                            String instanceId = newInstances.getString(i);
+                            log.info("Starting new instance: {}", instanceId);
+
+                            for (int j = 0; j < 3; j++) { // Each instance gets 3 containers
+                                if (containersNeeded == 0) break;
+
+                                int containerNumber = j + 1; // Start from 1 since it's a new instance
+                                String containerId = instanceId + "_" + containerNumber;
+                                containersToStartArray.put(containerId);
+                                log.info("Adding new container {} from instance {}", containerId, instanceId);
+
+                                ContainerAvailability newContainer = new ContainerAvailability();
+                                newContainer.setInstanceId(instanceId);
+                                newContainer.setMaxContainers(3);
+                                newContainer.setAvailableContainers(3);
+                                containerAvailabilityRepository.save(newContainer);
+
+                                containersNeeded--;
+                            }
+                        }
+                    }
+
+                    log.info("Starting {} containers", containersToStartArray.length());
+                    twinHandlerService.invokeContainerHealthCheck(containersToStartArray, twinAvailability.getTwinVersionId());
+
+                } catch (JSONException e) {
+                    log.error("Error starting containers for twin version {}. \n {}", twinAvailability.getTwinVersionId(), e.getMessage());
                 }
             }
 
@@ -169,9 +308,10 @@ public class SchedulerService {
             }            
 
             // Invoke the twin health check with the merged instancesForCheckStopped
-            twinHandlerService.invokeTwinHealthCheck(instancesForCheck, twinAvailability.getTwinVersionId()); 
+            twinHandlerService.invokeContainerHealthCheck(instancesForCheck, twinAvailability.getTwinVersionId());
 
-            log.info("Twin Autoscaling via {} Twin complete.", twinAvailability.getTwinVersionId());
+            // twinHandlerService.invokeTwinHealthCheck(instancesForCheck, twinAvailability.getTwinVersionId()); 
+            // log.info("Twin Autoscaling via {} Twin complete.", twinAvailability.getTwinVersionId());
 
         });
 
@@ -199,7 +339,7 @@ public class SchedulerService {
             try {
                 // Start new instances and get the JSONArray of newly started instance IDs //autoStartMinShutdownInstances = twinAvailability.getMinReserved()
                 JSONArray newInstances = twinHandlerService.startInstances(autoStartMinShutdownInstances - stoppedInstances.size() - stoppingInstances.size() - startedInstances.size());
-                
+
                 ExecutorService executorService = Executors.newFixedThreadPool(newInstances.length());
 
                 // Add each new instance ID from the JSONArray to instancesForCheckStopped

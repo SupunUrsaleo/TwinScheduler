@@ -25,6 +25,7 @@ public class AppSession {
     private String twinVersionId;
     private String status;
     private String instanceID;
+    private String containerID;
     private String partnerSecureData;
     private LocalDateTime startTime;
     private LocalDateTime endTime;
