@@ -450,7 +450,7 @@ public class TwinHandlerService {
         int mappedPort = appSession.getMappedPort();
         HttpStatusCode status = updatePartnerSecureData(partnerSecureData, serverPublicIP, mappedPort);
         if(status.is2xxSuccessful()){
-            String url = String.format("http://%s:%s/streaming/webrtc-demo/?server=%s", serverPublicIP,8011,serverPublicIP);
+            String url = String.format("http://%s:%s/streaming/webrtc-demo/?server=%s", serverPublicIP, mappedPort, serverPublicIP);
             appSession.setStatus(Status.BUSY);
             log.info("Sending Partner Secure Data to : {}",url);
             appSessionRepository.save(appSession);
@@ -717,7 +717,7 @@ public class TwinHandlerService {
                 instanceIds.put(instanceId);
 
                 // Stop the instance
-                stopEC2Instances(instanceIds);
+                // stopEC2Instances(instanceIds);
 
                 // Update ShutdownPool status to reflect stopped state
                 shutdownPoolEntry.setStatus(Status.STOPPING);
@@ -735,7 +735,7 @@ public class TwinHandlerService {
                 instanceIds.put(instanceId);
 
                 // Terminate the instance
-                terminateEC2Instances(instanceIds);
+                // terminateEC2Instances(instanceIds);
 
                 // Mark the app session as DEAD
                 appSession.setStatus(Status.DEAD);
@@ -753,13 +753,13 @@ public class TwinHandlerService {
             AppSession appSession = appSessionRepository.findByServerPublicIPAndMappedPort(publicIp, port);
 
             if (appSession == null) {
-                log.error("No appSession found for public IP: {}", publicIp);
+                log.error("No appSession found for public IP: {} and port {}", publicIp, port);
                 return;
             }
 
             // Ensure shutdown only happens if appSession status is BUSY or DEAD
             if (!appSession.getStatus().equals(Status.BUSY) && !appSession.getStatus().equals(Status.DEAD)) {
-                log.info("AppSession for public IP {} is not in BUSY or DEAD status. Shutdown skipped.", publicIp);
+                log.info("AppSession for public IP {} and port {} is not in BUSY or DEAD status. Shutdown skipped.", publicIp, port);
                 return;
             }
 
