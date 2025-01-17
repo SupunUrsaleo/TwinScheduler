@@ -19,7 +19,8 @@ public interface AppSessionRepository extends JpaRepository<AppSession, UUID> {
     AppSession findByServerPublicIP(String serverPublicIP);
     AppSession findByServerPublicIPAndMappedPort(String serverPublicIP, int mappedPort);
 
-    
+    @Query("SELECT a.containerID FROM AppSession a WHERE a.instanceID = :instanceId AND a.status IN ('Busy', 'Available','Starting')")
+    List<String> findActiveContainersByInstanceId(String instanceId);
 
     // Count available machines (replace "AVAILABLE" with the correct status)
     @Query("SELECT COUNT(a) FROM AppSession a WHERE a.status = 'Available'")

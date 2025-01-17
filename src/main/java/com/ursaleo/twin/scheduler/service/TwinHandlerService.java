@@ -5,9 +5,11 @@ import com.ursaleo.twin.scheduler.exception.TwinSchedulerException;
 import com.ursaleo.twin.scheduler.model.AppSession;
 import com.ursaleo.twin.scheduler.model.ShutdownPool;
 import com.ursaleo.twin.scheduler.model.TwinAvailability;
+import com.ursaleo.twin.scheduler.model.ContainerAvailability;
 import com.ursaleo.twin.scheduler.repository.AppSessionRepository;
 import com.ursaleo.twin.scheduler.repository.ShutdownPoolRepository;
 import com.ursaleo.twin.scheduler.repository.TwinAvailabilityRepository;
+import com.ursaleo.twin.scheduler.repository.ContainerAvailabilityRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 // import org.apache.logging.log4j.CloseableThreadContext.Instance;
@@ -82,6 +84,9 @@ public class TwinHandlerService {
 
     @Autowired
     private ShutdownPoolRepository shutdownPoolRepository;
+
+    @Autowired
+    private ContainerAvailabilityRepository containerAvailabilityRepository;
 
     private final RestTemplate restTemplate = new RestTemplate();
 
@@ -764,7 +769,7 @@ public class TwinHandlerService {
             }
 
             String instanceId = appSession.getInstanceID();
-            log.info("Found instance ID {} for public IP {}", instanceId, publicIp);
+            log.info("Found instance ID {} for public IP {} port {}", instanceId, publicIp, port);
 
             // Step 2: Check if the instance is in the ShutdownPool
             ShutdownPool shutdownPoolEntry = shutdownPoolRepository.findByInstanceId(instanceId);
@@ -779,9 +784,32 @@ public class TwinHandlerService {
                 // Stop the instance
                 // stopEC2Instances(instanceIds);
 
+                ContainerAvailability containerAvailability = containerAvailabilityRepository.findByInstanceId(instanceId);
+                if (containerAvailability != null) {
+                    int newAvailableContainers = Math.min(containerAvailability.getAvailableContainers() + 1, containerAvailability.getMaxContainers());
+                    containerAvailability.setAvailableContainers(newAvailableContainers);
+                    containerAvailabilityRepository.save(containerAvailability);
+                    log.info("Incremented availableContainers for instance {} to {}", instanceId, newAvailableContainers);
+
+                    // If all containers are now available, shut down the instance
+                    if (newAvailableContainers == containerAvailability.getMaxContainers()) {
+                        log.info("All containers are available for instance {}. Shutting down the instance.", instanceId);
+                        stopEC2Instances(instanceIds); // Call the shutdown method
+                        // Remove the ContainerAvailability record
+                        containerAvailabilityRepository.delete(containerAvailability);
+                        log.info("Removed ContainerAvailability record for instance {}", instanceId);
+
+                        // Update ShutdownPool status to reflect stopped state
+                        shutdownPoolEntry.setStatus(Status.STOPPING);
+                        shutdownPoolRepository.save(shutdownPoolEntry);
+                    }
+                } else {
+                    log.warn("No ContainerAvailability record found for instance {}", instanceId);
+                }
+
                 // Update ShutdownPool status to reflect stopped state
-                shutdownPoolEntry.setStatus(Status.STOPPING);
-                shutdownPoolRepository.save(shutdownPoolEntry);
+                // shutdownPoolEntry.setStatus(Status.STOPPING);
+                // shutdownPoolRepository.save(shutdownPoolEntry);
 
                 // Mark the app session as DEAD
                 appSession.setStatus(Status.DEAD);

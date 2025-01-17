@@ -31,6 +31,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import java.util.Set;
+import java.util.HashSet;
+
+
 @Service
 @Slf4j
 public class SchedulerService {
@@ -93,51 +97,141 @@ public class SchedulerService {
         int totalAvailableContainers = containerAvailabilityRepository.getTotalAvailableContainers();
         log.info("Total available Containers: {}", totalAvailableContainers);
 
+        List<ShutdownPool> stoppedInstances2 = shutdownPoolRepository.findByStatus(Status.STOPPED);
+
+        JSONArray StoppedInstanceIds2 = new JSONArray();
+        stoppedInstances2.stream()
+                .map(ShutdownPool::getInstanceId)
+                .forEach(StoppedInstanceIds2::put);   
         
         try {
             // Calculate how many more containers are needed
             int containerDeficit = totalMinAvailable - totalAvailableContainers - availableSessions - startingSessions;
 
+            JSONArray instancesToStartArray = new JSONArray();
+
             if (containerDeficit > 0) {
                 // Calculate how many instances to start to meet the deficit
-                int instancesToStart2 = (containerDeficit % 3 == 0) ? (containerDeficit / 3) : (containerDeficit / 3 + 1);
-        
-                log.info("Total instances to start: {}", instancesToStart2);
-        
-                if (instancesToStart2 > 0) {
-                    
-                    // Start new instances
-                    JSONArray newInstances2 = twinHandlerService.startInstances(instancesToStart2);
-                    log.info("Starting new instances. Instances Ids = {}", newInstances2);
-                    
-                    // Add each new instance ID from the JSONArray to instancesForCheck
-                    for (int i = 0; i < newInstances2.length(); i++) {
-                        String instanceId = newInstances2.getString(i);
-                        instancesForCheck2.put(instanceId);
-        
-                        // Create and save a new record in ContainerAvailability
-                        ContainerAvailability containerAvailability = new ContainerAvailability();
-                        containerAvailability.setInstanceId(instanceId);
-                        containerAvailability.setMaxContainers(3);  // Default max containers per instance
-                        containerAvailability.setAvailableContainers(3); // Initially, all are available
-        
-                        containerAvailabilityRepository.save(containerAvailability);
-                        log.info("Added new ContainerAvailability entry for instance {}", instanceId);
+                int instancesToStart = (containerDeficit % 3 == 0) ? (containerDeficit / 3) : (containerDeficit / 3 + 1);
+                log.info("Total instances to start: {}", instancesToStart);
+
+                if (instancesToStart > 0) {
+                    // Check if there are enough stopped instances to start
+                    int maxInstances = Math.min(instancesToStart, StoppedInstanceIds2.length()); // Ensure we don't exceed the number of stopped instances
+
+                    // Add only the required number of instance IDs from the StoppedInstanceIds list
+                    for (int i = 0; i < maxInstances; i++) {
+                        instancesToStartArray.put(StoppedInstanceIds2.get(i));
                     }
-                    log.info("Starting new instances. Instances Ids = {}", newInstances2);
-                    // Add a delay before calling invokeTwinHealthCheck
-                    try {
-                        Thread.sleep(1000);  // Adjust delay as needed
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        log.error("Interrupted while waiting before health check.");
+
+                    log.info("Starting {} instances from StoppedInstanceIds", instancesToStartArray.length());
+
+                    if(maxInstances > 0){
+                        // Start the selected instances
+                        JSONArray startedInstances = twinHandlerService.startEC2Instances(instancesToStartArray);
+                        
+
+                        // Loop through the started instances and log their status
+                        for (int i = 0; i < startedInstances.length(); i++) {
+                            JSONObject instance = startedInstances.getJSONObject(i);
+                            log.info("Started EC2 instance: instanceId={}, status={}", instance.getString("instanceId"), instance.getString("status"));
+                            // instancesForCheck.put(instance.getString("instanceId"));
+                            String instanceId = instance.getString("instanceId");
+                            // instancesForCheck2.put(instanceId);
+                            ShutdownPool shutdownPoolEntry = shutdownPoolRepository.findByInstanceId(instanceId);
+                            // Update ShutdownPool status to reflect stopped state
+                            shutdownPoolEntry.setStatus(Status.STARTED);
+                            shutdownPoolRepository.save(shutdownPoolEntry);
+            
+                            // Create and save a new record in ContainerAvailability
+                            ContainerAvailability containerAvailability = new ContainerAvailability();
+                            containerAvailability.setInstanceId(instanceId);
+                            containerAvailability.setMaxContainers(3);  // Default max containers per instance
+                            containerAvailability.setAvailableContainers(3); // Initially, all are available
+            
+                            containerAvailabilityRepository.save(containerAvailability);
+                            log.info("Added new ContainerAvailability entry for instance {}", instanceId);
+
                     }
-        
-                    // Invoke the twin health check
-                    // twinHandlerService.invokeTwinHealthCheck(instancesForCheck2, twinAvailability.getTwinVersionId()); 
-                }
+                    }
+
+                    if(maxInstances == 0){
+                        log.info("No enough shutdown pool instances");
+                        JSONArray newInstances = twinHandlerService.startInstances(instancesToStart);
+                        log.info("Starting new instances. Instances Ids = {}", newInstances);
+                        // Add each new instance ID from the JSONArray to instancesForCheck
+                        for (int i = 0; i < newInstances.length(); i++) {
+                            // instancesForCheck.put(newInstances.get(i));
+                            String instanceId = newInstances.getString(i);
+                            // instancesForCheck2.put(instanceId);
+            
+                            // Create and save a new record in ContainerAvailability
+                            ContainerAvailability containerAvailability = new ContainerAvailability();
+                            containerAvailability.setInstanceId(instanceId);
+                            containerAvailability.setMaxContainers(3);  // Default max containers per instance
+                            containerAvailability.setAvailableContainers(3); // Initially, all are available
+            
+                            containerAvailabilityRepository.save(containerAvailability);
+                            log.info("Added new ContainerAvailability entry for instance {}", instanceId);                                                
+                    }
+                    }
             }
-        } catch (Exception e) {
+        }
+
+        // Add a delay before calling invokeTwinHealthCheck
+        try {
+            Thread.sleep(1000);  // Adjust delay as needed
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Interrupted while waiting before health check.");
+            // No need to throw an exception if logging is sufficient
+        }
+
+        // Invoke the twin stop check with the merged instancesForCheckStopped
+        try {
+            twinHandlerService.invokeTwinStoppedCheck(StoppedInstanceIds2);
+            log.info("Shutdown Pool checked after initial instance check.");
+        } catch (JSONException e) {
+            log.error("Error invoking twin stopped check: {}", e.getMessage());
+        }
+        
+        
+                // if (instancesToStart2 > 0) {
+                    
+                //     // Start new instances
+                //     JSONArray newInstances2 = twinHandlerService.startInstances(instancesToStart2);
+                //     log.info("Starting new instances. Instances Ids = {}", newInstances2);
+                    
+                //     // Add each new instance ID from the JSONArray to instancesForCheck
+                //     for (int i = 0; i < newInstances2.length(); i++) {
+                //         String instanceId = newInstances2.getString(i);
+                //         instancesForCheck2.put(instanceId);
+        
+                //         // Create and save a new record in ContainerAvailability
+                //         ContainerAvailability containerAvailability = new ContainerAvailability();
+                //         containerAvailability.setInstanceId(instanceId);
+                //         containerAvailability.setMaxContainers(3);  // Default max containers per instance
+                //         containerAvailability.setAvailableContainers(3); // Initially, all are available
+        
+                //         containerAvailabilityRepository.save(containerAvailability);
+                //         log.info("Added new ContainerAvailability entry for instance {}", instanceId);
+                //     }
+                //     log.info("Starting new instances. Instances Ids = {}", newInstances2);
+                //     // Add a delay before calling invokeTwinHealthCheck
+                //     try {
+                //         Thread.sleep(1000);  // Adjust delay as needed
+                //     } catch (InterruptedException e) {
+                //         Thread.currentThread().interrupt();
+                //         log.error("Interrupted while waiting before health check.");
+                //     }
+        
+                //     // Invoke the twin health check
+                //     // twinHandlerService.invokeTwinHealthCheck(instancesForCheck2, twinAvailability.getTwinVersionId()); 
+                // }
+
+        }
+
+        catch (Exception e) {
             log.error("Error while starting instances: ", e);
         }
         
@@ -235,12 +329,40 @@ public class SchedulerService {
                         int available = container.getAvailableContainers();
                         String instanceId = container.getInstanceId();
 
+                        // Get active containers for this instance
+                        List<String> activeContainers = appSessionRepository.findActiveContainersByInstanceId(instanceId);
+
+                        // Extract existing container numbers (only 1, 2, 3)
+                        Set<Integer> assignedNumbers = new HashSet<>();
+                        for (String activeContainer : activeContainers) {
+                            String[] parts = activeContainer.split("_");
+                            if (parts.length == 2) {
+                                try {
+                                    int num = Integer.parseInt(parts[1]);
+                                    if (num >= 1 && num <= 3) { // Only track 1, 2, or 3
+                                        assignedNumbers.add(num);
+                                    }
+                                } catch (NumberFormatException ignored) {}
+                            }
+                        }
+
                         for (int i = 0; i < available; i++) { // Loop through available containers
                             if (containersNeeded == 0) break;
 
-                            // Determine container number dynamically
-                            int containerNumber = (container.getMaxContainers() - container.getAvailableContainers()) + 1;
-                            String containerId = instanceId + "_" + containerNumber; // Format: x_1, x_2, x_3
+                            // Find the lowest available number within [1, 2, 3]
+                            int containerNumber = 1;
+                            while (assignedNumbers.contains(containerNumber) && containerNumber <= 3) {
+                                containerNumber++;
+                            }
+
+                            if (containerNumber > 3) {
+                                log.warn("No available container slots for instance {}", instanceId);
+                                break; // Stop if all slots are occupied
+                            }
+
+                            assignedNumbers.add(containerNumber); // Mark as assigned
+
+                            String containerId = instanceId + "_" + containerNumber;
                             log.info("Assigning container {} from instance {}", containerId, instanceId);
                             containersToStartArray.put(containerId);
 
@@ -252,34 +374,129 @@ public class SchedulerService {
                         }
                     }
 
+
                     // If more containers are needed, launch new ones
                     if (containersNeeded > 0) {
                         log.info("Not enough available containers, launching new ones.");
+                        JSONArray instancesToStartArray = new JSONArray();
 
                         int instancesToStart = (containersNeeded % 3 == 0) ? (containersNeeded / 3) : (containersNeeded / 3 + 1);
-                        JSONArray newInstances = twinHandlerService.startInstances(instancesToStart);
+                        // JSONArray newInstances = twinHandlerService.startInstances(instancesToStart);
 
-                        for (int i = 0; i < newInstances.length(); i++) {
-                            String instanceId = newInstances.getString(i);
-                            log.info("Starting new instance: {}", instanceId);
+                        if (instancesToStart > 0) {
+                            // Check if there are enough stopped instances to start
+                            int maxInstances = Math.min(instancesToStart, StoppedInstanceIds.length()); // Ensure we don't exceed the number of stopped instances
 
-                            for (int j = 0; j < 3; j++) { // Each instance gets 3 containers
-                                if (containersNeeded == 0) break;
-
-                                int containerNumber = j + 1; // Start from 1 since it's a new instance
-                                String containerId = instanceId + "_" + containerNumber;
-                                containersToStartArray.put(containerId);
-                                log.info("Adding new container {} from instance {}", containerId, instanceId);
-
-                                ContainerAvailability newContainer = new ContainerAvailability();
-                                newContainer.setInstanceId(instanceId);
-                                newContainer.setMaxContainers(3);
-                                newContainer.setAvailableContainers(3);
-                                containerAvailabilityRepository.save(newContainer);
-
-                                containersNeeded--;
+                            // Add only the required number of instance IDs from the StoppedInstanceIds list
+                            for (int i = 0; i < maxInstances; i++) {
+                                instancesToStartArray.put(StoppedInstanceIds.get(i));
                             }
+
+                            log.info("Starting {} instances from StoppedInstanceIds", instancesToStartArray.length());
+
+                            if(maxInstances > 0){
+                                // Start the selected instances
+                                JSONArray startedInstances = twinHandlerService.startEC2Instances(instancesToStartArray);
+                                
+                                // Loop through the started instances and log their status
+                                for (int i = 0; i < startedInstances.length(); i++) {
+                                    JSONObject instance = startedInstances.getJSONObject(i);
+                                    log.info("Started EC2 instance: instanceId={}, status={}", instance.getString("instanceId"), instance.getString("status"));
+
+                                    String instanceId = instance.getString("instanceId");
+
+                                    ShutdownPool shutdownPoolEntry = shutdownPoolRepository.findByInstanceId(instanceId);
+                                    // Update ShutdownPool status to reflect stopped state
+                                    shutdownPoolEntry.setStatus(Status.STARTED);
+                                    shutdownPoolRepository.save(shutdownPoolEntry);
+
+                                    // Create and save a new record in ContainerAvailability
+                                    ContainerAvailability containerAvailability = new ContainerAvailability();
+                                    containerAvailability.setInstanceId(instanceId);
+                                    containerAvailability.setMaxContainers(3);
+                                    containerAvailability.setAvailableContainers(3);
+                                    // containerAvailabilityRepository.save(containerAvailability); // Save once at the beginning
+
+                                    int setavailableContainers = 3; // Start with max available containers
+
+                                    for (int j = 0; j < 3; j++) { // Each instance gets 3 containers
+                                        if (containersNeeded == 0) break;
+
+                                        int containerNumber = j + 1;
+                                        String containerId = instanceId + "_" + containerNumber;
+                                        containersToStartArray.put(containerId);
+                                        log.info("Adding new container {} from instance {}", containerId, instanceId);
+
+                                        setavailableContainers--; // Reduce available containers count
+                                        containersNeeded--;
+                                    }
+
+                                    // Update available containers once after the loop
+                                    containerAvailability.setAvailableContainers(setavailableContainers);
+                                    containerAvailabilityRepository.save(containerAvailability); // Save only once after updating
+                                }
+                            }
+
+                            if(maxInstances == 0){
+                                log.info("No enough shutdown pool instances");
+                                JSONArray newInstances = twinHandlerService.startInstances(instancesToStart);
+                                log.info("Starting new instances. Instances Ids = {}", newInstances);
+                                // Add each new instance ID from the JSONArray to instancesForCheck
+                                for (int i = 0; i < newInstances.length(); i++) {
+                                    // instancesForCheck.put(newInstances.get(i));
+                                    String instanceId = newInstances.getString(i);
+                                    // instancesForCheck2.put(instanceId);
+                    
+                                    // Create and save a new record in ContainerAvailability
+                                    ContainerAvailability containerAvailability = new ContainerAvailability();
+                                    containerAvailability.setInstanceId(instanceId);
+                                    containerAvailability.setMaxContainers(3);  // Default max containers per instance
+                                    containerAvailability.setAvailableContainers(3); // Initially, all are available
+                    
+                                    int setavailableContainers = 3; // Start with max available containers
+                                    // containerAvailabilityRepository.save(containerAvailability);
+                                    log.info("Added new ContainerAvailability entry for instance {}", instanceId);
+
+                                    for (int j = 0; j < 3; j++) { // Each instance gets 3 containers
+                                        if (containersNeeded == 0) break;
+
+                                        int containerNumber = j + 1; // Start from 1 since it's a new instance
+                                        String containerId = instanceId + "_" + containerNumber;
+                                        containersToStartArray.put(containerId);
+                                        log.info("Adding new container {} from instance {}", containerId, instanceId);
+                                        
+                                        setavailableContainers--; // Reduce available containers count
+                                        containersNeeded--;
+                                    }     
+                                    // Update available containers once after the loop
+                                    containerAvailability.setAvailableContainers(setavailableContainers);
+                                    containerAvailabilityRepository.save(containerAvailability); // Save only once after updating
+                                }
+                            }
+
                         }
+
+                        // for (int i = 0; i < newInstances.length(); i++) {
+                        //     String instanceId = newInstances.getString(i);
+                        //     log.info("Starting new instance: {}", instanceId);
+
+                        //     for (int j = 0; j < 3; j++) { // Each instance gets 3 containers
+                        //         if (containersNeeded == 0) break;
+
+                        //         int containerNumber = j + 1; // Start from 1 since it's a new instance
+                        //         String containerId = instanceId + "_" + containerNumber;
+                        //         containersToStartArray.put(containerId);
+                        //         log.info("Adding new container {} from instance {}", containerId, instanceId);
+
+                        //         ContainerAvailability newContainer = new ContainerAvailability();
+                        //         newContainer.setInstanceId(instanceId);
+                        //         newContainer.setMaxContainers(3);
+                        //         newContainer.setAvailableContainers(3);
+                        //         containerAvailabilityRepository.save(newContainer);
+
+                        //         containersNeeded--;
+                        //     }
+                        // }
                     }
 
                     log.info("Starting {} containers", containersToStartArray.length());
