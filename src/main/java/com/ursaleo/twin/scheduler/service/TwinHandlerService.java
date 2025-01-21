@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.Set;
+import java.util.HashSet;
 
 import com.amazonaws.services.ec2.model.DescribeInstancesRequest;
 import com.amazonaws.services.ec2.model.DescribeInstancesResult;
@@ -248,7 +249,6 @@ public class TwinHandlerService {
         }
     }
     
-
     private void updateAllAppSessions(String twinVersionId, JSONArray responseArr) throws JSONException {
         JSONArray failedInstances = new JSONArray(); //TODO: if the instance is dead no use keeping it. shut them down
         for (int i = 0; i < responseArr.length(); i++) {
@@ -280,6 +280,16 @@ public class TwinHandlerService {
            // appSession.setStartTime(LocalDateTime.parse(responseObj.getString("LaunchTime")));
             //appSession.setEndTime(LocalDateTime.now().plusMinutes(1));
             
+            // if ((Objects.isNull(appSession.getStatus()) || !appSession.getStatus().equals(Status.BUSY))) {
+            //     if ((port.equals("8011") || port.equals("8211") || port.equals("8311"))) {
+            //         appSession.setMappedPort(Integer.parseInt(port));
+            //         appSession.setStatus(Status.AVAILABLE);
+            //         log.info("Port is valid and status set to AVAILABLE. Port: {}", port);
+            //     } else {
+            //         appSession.setStatus(Status.STARTING);
+            //         log.info("Port is invalid and status set to STARTING. Port: {}", port);
+            //     }
+            // }
             if(Objects.isNull(appSession.getStatus()) || !appSession.getStatus().equals(Status.BUSY)){
                 appSession.setStatus(Status.AVAILABLE);
             }
@@ -289,7 +299,7 @@ public class TwinHandlerService {
             } else {
                 appSession.setStatus(Status.STARTING);
                 log.info("port {}", port);
-            }            
+            }         
 
             appSessionRepository.save(appSession);
         }
@@ -367,46 +377,254 @@ public class TwinHandlerService {
                 throw new TwinSchedulerException("Max Limit of instances for this Twin version is reached. No new instances will be spawned.");
             }
 
-            // Get one instance from the ShutdownPool
-            List<ShutdownPool> stoppedInstances = shutdownPoolRepository.findByStatus(Status.STOPPED);
+            try {
+                JSONArray containersToStartArray = new JSONArray();
+                List<ContainerAvailability> availableContainers = containerAvailabilityRepository.findByAvailableContainersGreaterThan(0);
 
-            if (!stoppedInstances.isEmpty()) {
-                // Get the first available instance from the stopped pool
-                ShutdownPool selectedInstance = stoppedInstances.get(0);
-                String instanceId = selectedInstance.getInstanceId();
+                // int containersNeeded = twinAvailability.getMinAvailable() - nonBusyInstances;
+                // log.info("Total containers needed: {}", containersNeeded);
+                int containersNeeded = 1;
 
-                // Immediately update the status to 'STARTING' to lock the instance
-                selectedInstance.setStatus(Status.STARTED);
-                shutdownPoolRepository.save(selectedInstance);  // Save the status update
-                // shutdownPoolRepository.delete(selectedInstance);
+                // Get one instance from the ShutdownPool
+                List<ShutdownPool> stoppedInstances = shutdownPoolRepository.findByStatus(Status.STOPPED);
 
-                JSONArray instancesToStartArray = new JSONArray();
-                instancesToStartArray.put(instanceId);
+                if (!availableContainers.isEmpty()){
+                    // Assign existing available containers first
+                    for (ContainerAvailability container : availableContainers) {
+                        if (containersNeeded == 0) break; // Stop if enough containers are assigned
 
-                log.info("Starting instance {} from StoppedInstanceIds", instanceId);
+                        int available = container.getAvailableContainers();
+                        String instanceId = container.getInstanceId();
 
-                // Start the selected instance
-                JSONArray startedInstances = startEC2Instances(instancesToStartArray);
+                        // Get active containers for this instance
+                        List<String> activeContainers = appSessionRepository.findActiveContainersByInstanceId(instanceId);
 
-                // Add a delay before calling the health check
-                try {
-                    Thread.sleep(1000); // Wait for 1 seconds (adjust as needed)
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new TwinSchedulerException("Interrupted while waiting for instance to transition states.");
-                }                
+                        // Extract existing container numbers (only 1, 2, 3)
+                        Set<Integer> assignedNumbers = new HashSet<>();
+                        for (String activeContainer : activeContainers) {
+                            String[] parts = activeContainer.split("_");
+                            if (parts.length == 2) {
+                                try {
+                                    int num = Integer.parseInt(parts[1]);
+                                    if (num >= 1 && num <= 3) { // Only track 1, 2, or 3
+                                        assignedNumbers.add(num);
+                                    }
+                                } catch (NumberFormatException ignored) {}
+                            }
+                        }
 
-                // Call the health check after starting the instance
-                log.info("Starting invokeTwinHealthCheck for instance {} from StoppedInstanceIds", instanceId);
-                invokeTwinHealthCheck(instancesToStartArray, twinVersionId);  // Call health check
-                // // Log the status of the started instance
-                // if (startedInstances.length() > 0) {
-                //     JSONObject instance = startedInstances.getJSONObject(0);
-                //     log.info("Started EC2 instance: instanceId={}, status={}", instance.getString("instanceId"), instance.getString("status"));
-                //     byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
-                // }
+                        for (int i = 0; i < available; i++) { // Loop through available containers
+                            if (containersNeeded == 0) break;
 
-                            // Retry mechanism: wait and check if the instance is available
+                            // Find the lowest available number within [1, 2, 3]
+                            int containerNumber = 1;
+                            while (assignedNumbers.contains(containerNumber) && containerNumber <= 3) {
+                                containerNumber++;
+                            }
+
+                            if (containerNumber > 3) {
+                                log.warn("No available container slots for instance {}", instanceId);
+                                break; // Stop if all slots are occupied
+                            }
+
+                            assignedNumbers.add(containerNumber); // Mark as assigned
+
+                            String containerId = instanceId + "_" + containerNumber;
+                            log.info("Assigning container {} from instance {}", containerId, instanceId);
+                            containersToStartArray.put(containerId);
+
+                            // Update container availability
+                            container.setAvailableContainers(container.getAvailableContainers() - 1);
+                            containerAvailabilityRepository.save(container);
+
+                            containersNeeded--;
+                        }
+                    }
+
+                    log.info("Starting {} containers", containersToStartArray.length());
+                    invokeContainerHealthCheck(containersToStartArray, twinVersionId);  
+
+                    // Log the status of the started instance
+                    // byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
+                
+                    // Retry mechanism: wait and check if the instance is available
+                    int maxRetries = 10;  // Maximum retries (e.g., wait for 5 minutes total with 30-second intervals)
+                    int retryCount = 0;
+                    while (retryCount < maxRetries) {
+                        log.info("Checking for available instance (attempt {})...", retryCount + 1);
+                        byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
+                        if (!byTwinVersionIdAndStatus.isEmpty()) {
+                            log.info("Instance is now available.");
+                            break;
+                        }
+                        retryCount++;
+                        try {
+                            Thread.sleep(30000);  // Wait for 5 seconds before retrying
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new TwinSchedulerException("Interrupted while waiting for instance to become available.");
+                        }
+                    }
+
+                    // Check if an available instance is present after starting
+                    if (!byTwinVersionIdAndStatus.isEmpty()) {
+                        byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
+                        url = getStreamUrl(byTwinVersionIdAndStatus.get(0), partnerSecureData);
+                    } else {
+                        throw new TwinSchedulerException("No available instances found after starting stopped instance.");
+                    }
+                }
+
+                else if (!stoppedInstances.isEmpty()) {
+                    JSONArray StoppedInstanceIds = new JSONArray();
+                    stoppedInstances.stream()
+                            .map(ShutdownPool::getInstanceId)
+                            .forEach(StoppedInstanceIds::put); 
+
+                    // If still containers are needed, launch new instance
+                    if (containersNeeded > 0) {
+                        log.info("Not enough available containers, launching new ones.");
+                        JSONArray instancesToStartArray = new JSONArray();
+
+                        // int instancesToStart = (containersNeeded % 3 == 0) ? (containersNeeded / 3) : (containersNeeded / 3 + 1);
+                        int instancesToStart = 1;
+                        // JSONArray newInstances = twinHandlerService.startInstances(instancesToStart);
+
+                        if (instancesToStart > 0) {
+                            // Check if there are enough stopped instances to start
+                            int maxInstances = Math.min(instancesToStart, StoppedInstanceIds.length()); // Ensure we don't exceed the number of stopped instances
+
+                            // Add only the required number of instance IDs from the StoppedInstanceIds list
+                            for (int i = 0; i < maxInstances; i++) {
+                                instancesToStartArray.put(StoppedInstanceIds.get(i));
+                            }
+
+                            log.info("Starting {} instances from StoppedInstanceIds", instancesToStartArray.length());
+
+                            if(maxInstances > 0){
+                                // Start the selected instances
+                                JSONArray startedInstances = startEC2Instances(instancesToStartArray);
+                                
+                                // Loop through the started instances and log their status
+                                for (int i = 0; i < startedInstances.length(); i++) {
+                                    JSONObject instance = startedInstances.getJSONObject(i);
+                                    log.info("Started EC2 instance: instanceId={}, status={}", instance.getString("instanceId"), instance.getString("status"));
+
+                                    String instanceId = instance.getString("instanceId");
+
+                                    ShutdownPool shutdownPoolEntry = shutdownPoolRepository.findByInstanceId(instanceId);
+                                    // Update ShutdownPool status to reflect stopped state
+                                    shutdownPoolEntry.setStatus(Status.STARTED);
+                                    shutdownPoolRepository.save(shutdownPoolEntry);
+
+                                    // Create and save a new record in ContainerAvailability
+                                    ContainerAvailability containerAvailability = new ContainerAvailability();
+                                    containerAvailability.setInstanceId(instanceId);
+                                    containerAvailability.setMaxContainers(3);
+                                    containerAvailability.setAvailableContainers(3);
+                                    // containerAvailabilityRepository.save(containerAvailability); // Save once at the beginning
+
+                                    int setavailableContainers = 3; // Start with max available containers
+
+                                    for (int j = 0; j < 3; j++) { // Each instance gets 3 containers
+                                        if (containersNeeded == 0) break;
+
+                                        int containerNumber = j + 1;
+                                        String containerId = instanceId + "_" + containerNumber;
+                                        containersToStartArray.put(containerId);
+                                        log.info("Adding new container {} from instance {}", containerId, instanceId);
+
+                                        setavailableContainers--; // Reduce available containers count
+                                        containersNeeded--;
+                                    }
+
+                                    // Update available containers once after the loop
+                                    containerAvailability.setAvailableContainers(setavailableContainers);
+                                    containerAvailabilityRepository.save(containerAvailability); // Save only once after updating
+                                }
+                            }
+                        }
+                    }
+
+                    log.info("Starting {} containers", containersToStartArray.length());
+                    invokeContainerHealthCheck(containersToStartArray, twinVersionId);  
+
+                    // Log the status of the started instance
+                    // byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
+                
+                    // Retry mechanism: wait and check if the instance is available
+                    int maxRetries = 10;  // Maximum retries (e.g., wait for 5 minutes total with 30-second intervals)
+                    int retryCount = 0;
+                    while (retryCount < maxRetries) {
+                        log.info("Checking for available instance (attempt {})...", retryCount + 1);
+                        byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
+                        if (!byTwinVersionIdAndStatus.isEmpty()) {
+                            log.info("Instance is now available.");
+                            break;
+                        }
+                        retryCount++;
+                        try {
+                            Thread.sleep(30000);  // Wait for 5 seconds before retrying
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new TwinSchedulerException("Interrupted while waiting for instance to become available.");
+                        }
+                    }
+
+                    // Check if an available instance is present after starting
+                    if (!byTwinVersionIdAndStatus.isEmpty()) {
+                        byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
+                        url = getStreamUrl(byTwinVersionIdAndStatus.get(0), partnerSecureData);
+                    } else {
+                        throw new TwinSchedulerException("No available instances found after starting stopped instance.");
+                    }
+                }
+                
+                // if (containersToStartArray.length() > 0) {
+
+            else {
+        
+                log.info("No stopped instances available, spawning a new one.");
+
+                // int containersNeeded = 1;
+                int instancesToStart = 1;
+                log.info("No enough shutdown pool instances");
+                JSONArray newInstances = startInstances(instancesToStart);
+                log.info("Starting new instances. Instances Ids = {}", newInstances);
+                // Add each new instance ID from the JSONArray to instancesForCheck
+                for (int i = 0; i < newInstances.length(); i++) {
+                    // instancesForCheck.put(newInstances.get(i));
+                    String instanceId = newInstances.getString(i);
+                    // instancesForCheck2.put(instanceId);
+    
+                    // Create and save a new record in ContainerAvailability
+                    ContainerAvailability containerAvailability = new ContainerAvailability();
+                    containerAvailability.setInstanceId(instanceId);
+                    containerAvailability.setMaxContainers(3);  // Default max containers per instance
+                    containerAvailability.setAvailableContainers(3); // Initially, all are available
+    
+                    int setavailableContainers = 3; // Start with max available containers
+                    // containerAvailabilityRepository.save(containerAvailability);
+                    log.info("Added new ContainerAvailability entry for instance {}", instanceId);
+
+                    for (int j = 0; j < 3; j++) { // Each instance gets 3 containers
+                        if (containersNeeded == 0) break;
+
+                        int containerNumber = j + 1; // Start from 1 since it's a new instance
+                        String containerId = instanceId + "_" + containerNumber;
+                        containersToStartArray.put(containerId);
+                        log.info("Adding new container {} from instance {}", containerId, instanceId);
+                        
+                        setavailableContainers--; // Reduce available containers count
+                        containersNeeded--;
+                    }     
+                    // Update available containers once after the loop
+                    containerAvailability.setAvailableContainers(setavailableContainers);
+                    containerAvailabilityRepository.save(containerAvailability); // Save only once after updating
+                }
+
+                invokeContainerHealthCheck(containersToStartArray, twinVersionId);            
+
                 int maxRetries = 10;  // Maximum retries (e.g., wait for 5 minutes total with 30-second intervals)
                 int retryCount = 0;
                 while (retryCount < maxRetries) {
@@ -425,22 +643,22 @@ public class TwinHandlerService {
                     }
                 }
 
-                // Check if an available instance is present after starting
+                // // If no stopped instances are available, fallback to spawning a new instance
+                // log.info("No stopped instances available, spawning a new one.");
+                // JSONArray newInstanceArr = startInstances(1);  // Start one new instance
+                // invokeTwinHealthCheck(newInstanceArr, twinVersionId);
+
+                // byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
                 if (!byTwinVersionIdAndStatus.isEmpty()) {
-                    url = getStreamUrl(byTwinVersionIdAndStatus.get(0), partnerSecureData);
-                } else {
-                    throw new TwinSchedulerException("No available instances found after starting stopped instance.");
-                }
-            } else {
-                // If no stopped instances are available, fallback to spawning a new instance
-                log.info("No stopped instances available, spawning a new one.");
-                JSONArray newInstanceArr = startInstances(1);  // Start one new instance
-                invokeTwinHealthCheck(newInstanceArr, twinVersionId);
-                byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
-                if (!byTwinVersionIdAndStatus.isEmpty()) {
+                    byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
                     url = getStreamUrl(byTwinVersionIdAndStatus.get(0), partnerSecureData);
                 }
             }
+
+            } catch (JSONException e) {
+                log.error("Error starting containers for twin version {}. \n {}",twinVersionId, e.getMessage());
+            }
+
         } else {
             // If available instances are found, use the first one
             url = getStreamUrl(byTwinVersionIdAndStatus.get(0), partnerSecureData);
@@ -450,38 +668,89 @@ public class TwinHandlerService {
     }
 
 
-    private String getStreamUrl(AppSession appSession, String partnerSecureData) {
-        String serverPublicIP = appSession.getServerPublicIP();
-        int mappedPort = appSession.getMappedPort();
-        HttpStatusCode status = updatePartnerSecureData(partnerSecureData, serverPublicIP, mappedPort);
+private String getStreamUrl(AppSession appSession, String partnerSecureData) {
+    String serverPublicIP = appSession.getServerPublicIP();
+    int mappedPort = appSession.getMappedPort();
+
+    // If mappedPort is 0, determine it based on containerID
+    if (mappedPort == 0) {
+        String containerID = appSession.getContainerID();
+        log.info("ContainerID: {}", containerID);
+
+        // Extract the container number from containerID
+        String[] parts = containerID.split("_");
+        if (parts.length > 1) {
+            try {
+                int containerNumber = Integer.parseInt(parts[1]); // Extract the container number
+                switch (containerNumber) {
+                    case 1:
+                        mappedPort = 8011;
+                        break;
+                    case 2:
+                        mappedPort = 8211;
+                        break;
+                    case 3:
+                        mappedPort = 8311;
+                        break;
+                    default:
+                        throw new TwinSchedulerException("Invalid container number: " + containerNumber);
+                }
+                appSession.setMappedPort(mappedPort);
+                log.info("Mapped port determined from containerID: {}", mappedPort);
+            } catch (NumberFormatException e) {
+                throw new TwinSchedulerException("Failed to parse container number from containerID: " + containerID + ". Error: " + e.getMessage());
+            }
+        } else {
+            throw new TwinSchedulerException("Invalid containerID format: " + containerID);
+        }
+    }
+
+    HttpStatusCode status = updatePartnerSecureData(partnerSecureData, serverPublicIP, mappedPort);
         if(status.is2xxSuccessful()){
-            String url = String.format("http://%s:%s/streaming/webrtc-demo/?server=%s", serverPublicIP, mappedPort, serverPublicIP);
-            appSession.setStatus(Status.BUSY);
+        String url = String.format("http://%s:%s/streaming/webrtc-demo/?server=%s", serverPublicIP, mappedPort, serverPublicIP);
+        appSession.setStatus(Status.BUSY);
             log.info("Sending Partner Secure Data to : {}",url);
-            appSessionRepository.save(appSession);
-            return url;
-        }
-        throw new TwinSchedulerException("Could not Save provided Partner Data. Please try again.");
+        appSessionRepository.save(appSession);
+        return url;
+    }
+    throw new TwinSchedulerException("Could not Save provided Partner Data. Please try again.");
+}
+
+
+private HttpStatusCode updatePartnerSecureData(String partnerSecureData, String serverPublicIP, int mappedPort) {
+    HttpHeaders headers = new HttpHeaders();
+    headers.setContentType(MediaType.APPLICATION_JSON);
+
+    HttpEntity<String> entity = new HttpEntity<>(partnerSecureData, headers);
+
+    // Determine the port based on the mappedPort
+    int port;
+    switch (mappedPort) {
+        case 8011:
+            port = 8081;
+            break;
+        case 8211:
+            port = 8082;
+            break;
+        case 8311:
+            port = 8083;
+            break;
+        default:
+            throw new TwinSchedulerException("Invalid mappedPort: " + mappedPort);
     }
 
-    private HttpStatusCode updatePartnerSecureData(String partnerSecureData, String serverPublicIP, int mappedPort){
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-
-        HttpEntity<String> entity = new HttpEntity<>(partnerSecureData, headers);
-        URI uri = null;
-        try {
-            uri = new URI(String.format("http://%s:%d/api/savePartnerData", serverPublicIP, 8081));
-            log.info("Sending Partner Secure Data to : {}",uri.toString());
-            ResponseEntity<String> response = restTemplate.postForEntity(uri, entity, String.class);
-            return response.getStatusCode();
-        } catch (Exception e) {
-            log.error("Could not save Partner Secure Data, Error: {}",
-                    e.getMessage(),e);
-            throw new TwinSchedulerException("Could not save Partner Secure Data.");
-        }
-
+    URI uri = null;
+    try {
+        uri = new URI(String.format("http://%s:%d/api/savePartnerData", serverPublicIP, port));
+        log.info("Sending Partner Secure Data to : {}", uri.toString());
+        ResponseEntity<String> response = restTemplate.postForEntity(uri, entity, String.class);
+        return response.getStatusCode();
+    } catch (Exception e) {
+        log.error("Could not save Partner Secure Data, Error: {}", e.getMessage(), e);
+        throw new TwinSchedulerException("Could not save Partner Secure Data.");
     }
+}
+
 
     public JSONArray startInstances(int numberOfInstances) throws JSONException {
         ResponseEntity<String> response = restTemplate.postForEntity(getAutoScalerURI(numberOfInstances), null, String.class);
