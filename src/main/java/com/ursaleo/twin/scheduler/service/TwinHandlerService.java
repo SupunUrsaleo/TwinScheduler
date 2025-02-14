@@ -97,8 +97,8 @@ public class TwinHandlerService {
                 JSONObject partnerSecureDataObj = new JSONObject();
                 JSONObject userDataObj = new JSONObject();
 
-                userDataObj.put("clientId", "d090e8bd-2e70-4dcc-9162-9f9c0c4090d8");
-                userDataObj.put("twinId", "d4bd9c9c-fe70-407f-ae24-cc669de1f5ae");
+                userDataObj.put("clientId", "0ee42e0b-9aca-4b10-865b-83ec932ae7c2");
+                userDataObj.put("twinId", "9e3cd296-7d38-4a63-9c69-fa2d6f570887");
                 userDataObj.put("twinVersionId",  twinVersionId);
                 userDataObj.put("baseUrl", "https://app.ursaleo.com");
                 partnerSecureDataObj.put("app_data", userDataObj);
