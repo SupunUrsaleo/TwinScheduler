@@ -92,6 +92,8 @@ public class TwinHandlerService {
                 JSONObject requestObj = new JSONObject();
                 requestObj.put("instance_ids", instanceIds);
 
+                TwinAvailability twinAvailability = twinAvailabilityRepository.findByTwinVersionId(twinVersionId);
+
                 // Create the data object
                 JSONObject dataObj = new JSONObject();
                 JSONObject partnerSecureDataObj = new JSONObject();
@@ -99,11 +101,22 @@ public class TwinHandlerService {
 
                 userDataObj.put("clientId", "0ee42e0b-9aca-4b10-865b-83ec932ae7c2");
                 userDataObj.put("twinId", "9e3cd296-7d38-4a63-9c69-fa2d6f570887");
-                userDataObj.put("twinVersionId",  twinVersionId);
+                // userDataObj.put("twinVersionId",  twinVersionId);
+                // userDataObj.put("baseUrl", "https://app.ursaleo.com");
+                // partnerSecureDataObj.put("app_data", userDataObj);
+                // dataObj.put("partnerSecureData", partnerSecureDataObj);
+                // requestObj.put("data", dataObj);
+
+                // Populate userDataObj with fetched values
+                // userDataObj.put("clientId", twinAvailability.getClientId());
+                // userDataObj.put("twinId", twinAvailability.getTwinId());
+                userDataObj.put("twinVersionId", twinVersionId);
+                userDataObj.put("clientName", twinAvailability.getClientName());
+                userDataObj.put("twinName", twinAvailability.getTwinName());
                 userDataObj.put("baseUrl", "https://app.ursaleo.com");
                 partnerSecureDataObj.put("app_data", userDataObj);
                 dataObj.put("partnerSecureData", partnerSecureDataObj);
-                requestObj.put("data", dataObj);
+                requestObj.put("data", dataObj);                
 
 
                 HttpHeaders headers = new HttpHeaders();

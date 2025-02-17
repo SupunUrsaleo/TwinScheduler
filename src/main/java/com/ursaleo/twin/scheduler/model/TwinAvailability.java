@@ -14,5 +14,10 @@ public class TwinAvailability {
     private int maxBusy;
     // private int minReserved;
 
+    // private String clientId;
+    // private String twinId;
+    private String clientName;
+    private String twinName;
+
 }
 
