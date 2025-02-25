@@ -402,8 +402,11 @@ public class TwinHandlerService {
         String serverPublicIP = appSession.getServerPublicIP();
         int mappedPort = appSession.getMappedPort();
         HttpStatusCode status = updatePartnerSecureData(partnerSecureData, serverPublicIP, mappedPort);
+        // https://twinproxy.ursaleo.com/3.141.48.141/8011/49100/streaming/webrtc-demo/?server=3.141.48.141
         if(status.is2xxSuccessful()){
-            String url = String.format("http://%s:%s/streaming/webrtc-demo/?server=%s", serverPublicIP,8011,serverPublicIP);
+
+            String url = String.format("https://twinproxy.ursaleo.com/%s/%s/%s/streaming/webrtc-demo/?server=%s", serverPublicIP,8011,49100,serverPublicIP);
+            // String url = String.format("https://%s:%s/streaming/webrtc-demo/?server=%s", serverPublicIP,8011,serverPublicIP);
             appSession.setStatus(Status.BUSY);
             log.info("Sending Partner Secure Data to : {}",url);
             appSessionRepository.save(appSession);
