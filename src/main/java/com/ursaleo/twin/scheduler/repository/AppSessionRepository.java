@@ -9,6 +9,8 @@ import org.springframework.data.jpa.repository.Query;
 public interface AppSessionRepository extends JpaRepository<AppSession, UUID> {
 
     List<AppSession> findByTwinVersionIdAndStatus(String twinVersionId, String status);
+    // @Query("SELECT a FROM AppSession a WHERE a.twinVersionId = :twinVersionId AND a.status = :status AND a.mappedPort IN (8011, 8211, 8311)")
+    // List<AppSession> findByTwinVersionIdAndStatus(String twinVersionId, String status);
 
     List<AppSession> findByTwinVersionIdAndStatusIn(String twinVersionId, List<String> statuses);
     List<AppSession> findByStatus(String status);

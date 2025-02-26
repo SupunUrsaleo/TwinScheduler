@@ -69,6 +69,9 @@ public class SchedulerService {
     @Value("${scheduler.autoscale.minInstances}")
     private long autoScaleMinInstances;
 
+    @Value("${scheduler.autoscale.minContainers}")
+    private int autoScaleMinContainers;
+
     @Value("${scheduler.autostart.minShutdownInstances}")
     private int autoStartMinShutdownInstances;
 
@@ -112,7 +115,7 @@ public class SchedulerService {
 
             if (containerDeficit > 0) {
                 // Calculate how many instances to start to meet the deficit
-                int instancesToStart = (containerDeficit % 3 == 0) ? (containerDeficit / 3) : (containerDeficit / 3 + 1);
+                int instancesToStart = (containerDeficit % autoScaleMinContainers == 0) ? (containerDeficit / autoScaleMinContainers) : (containerDeficit / autoScaleMinContainers + 1);
                 log.info("Total instances to start: {}", instancesToStart);
 
                 if (instancesToStart > 0) {
@@ -146,8 +149,8 @@ public class SchedulerService {
                             // Create and save a new record in ContainerAvailability
                             ContainerAvailability containerAvailability = new ContainerAvailability();
                             containerAvailability.setInstanceId(instanceId);
-                            containerAvailability.setMaxContainers(3);  // Default max containers per instance
-                            containerAvailability.setAvailableContainers(3); // Initially, all are available
+                            containerAvailability.setMaxContainers(autoScaleMinContainers);  // Default max containers per instance
+                            containerAvailability.setAvailableContainers(autoScaleMinContainers); // Initially, all are available
             
                             containerAvailabilityRepository.save(containerAvailability);
                             log.info("Added new ContainerAvailability entry for instance {}", instanceId);
@@ -168,8 +171,8 @@ public class SchedulerService {
                             // Create and save a new record in ContainerAvailability
                             ContainerAvailability containerAvailability = new ContainerAvailability();
                             containerAvailability.setInstanceId(instanceId);
-                            containerAvailability.setMaxContainers(3);  // Default max containers per instance
-                            containerAvailability.setAvailableContainers(3); // Initially, all are available
+                            containerAvailability.setMaxContainers(autoScaleMinContainers);  // Default max containers per instance
+                            containerAvailability.setAvailableContainers(autoScaleMinContainers); // Initially, all are available
             
                             containerAvailabilityRepository.save(containerAvailability);
                             log.info("Added new ContainerAvailability entry for instance {}", instanceId);                                                
@@ -210,8 +213,8 @@ public class SchedulerService {
                 //         // Create and save a new record in ContainerAvailability
                 //         ContainerAvailability containerAvailability = new ContainerAvailability();
                 //         containerAvailability.setInstanceId(instanceId);
-                //         containerAvailability.setMaxContainers(3);  // Default max containers per instance
-                //         containerAvailability.setAvailableContainers(3); // Initially, all are available
+                //         containerAvailability.setMaxContainers(autoScaleMinContainers);  // Default max containers per instance
+                //         containerAvailability.setAvailableContainers(autoScaleMinContainers); // Initially, all are available
         
                 //         containerAvailabilityRepository.save(containerAvailability);
                 //         log.info("Added new ContainerAvailability entry for instance {}", instanceId);
@@ -332,14 +335,14 @@ public class SchedulerService {
                         // Get active containers for this instance
                         List<String> activeContainers = appSessionRepository.findActiveContainersByInstanceId(instanceId);
 
-                        // Extract existing container numbers (only 1, 2, 3)
+                        // Extract existing container numbers (only 1, 2, autoScaleMinContainers)
                         Set<Integer> assignedNumbers = new HashSet<>();
                         for (String activeContainer : activeContainers) {
                             String[] parts = activeContainer.split("_");
                             if (parts.length == 2) {
                                 try {
                                     int num = Integer.parseInt(parts[1]);
-                                    if (num >= 1 && num <= 3) { // Only track 1, 2, or 3
+                                    if (num >= 1 && num <= autoScaleMinContainers) { // Only track 1, 2, or autoScaleMinContainers
                                         assignedNumbers.add(num);
                                     }
                                 } catch (NumberFormatException ignored) {}
@@ -349,13 +352,13 @@ public class SchedulerService {
                         for (int i = 0; i < available; i++) { // Loop through available containers
                             if (containersNeeded == 0) break;
 
-                            // Find the lowest available number within [1, 2, 3]
+                            // Find the lowest available number within [1, 2, autoScaleMinContainers]
                             int containerNumber = 1;
-                            while (assignedNumbers.contains(containerNumber) && containerNumber <= 3) {
+                            while (assignedNumbers.contains(containerNumber) && containerNumber <= autoScaleMinContainers) {
                                 containerNumber++;
                             }
 
-                            if (containerNumber > 3) {
+                            if (containerNumber > autoScaleMinContainers) {
                                 log.warn("No available container slots for instance {}", instanceId);
                                 break; // Stop if all slots are occupied
                             }
@@ -380,7 +383,7 @@ public class SchedulerService {
                         log.info("Not enough available containers, launching new ones.");
                         JSONArray instancesToStartArray = new JSONArray();
 
-                        int instancesToStart = (containersNeeded % 3 == 0) ? (containersNeeded / 3) : (containersNeeded / 3 + 1);
+                        int instancesToStart = (containersNeeded % autoScaleMinContainers == 0) ? (containersNeeded / autoScaleMinContainers) : (containersNeeded / autoScaleMinContainers + 1);
                         // JSONArray newInstances = twinHandlerService.startInstances(instancesToStart);
 
                         if (instancesToStart > 0) {
@@ -413,13 +416,13 @@ public class SchedulerService {
                                     // Create and save a new record in ContainerAvailability
                                     ContainerAvailability containerAvailability = new ContainerAvailability();
                                     containerAvailability.setInstanceId(instanceId);
-                                    containerAvailability.setMaxContainers(3);
-                                    containerAvailability.setAvailableContainers(3);
+                                    containerAvailability.setMaxContainers(autoScaleMinContainers);
+                                    containerAvailability.setAvailableContainers(autoScaleMinContainers);
                                     // containerAvailabilityRepository.save(containerAvailability); // Save once at the beginning
 
-                                    int setavailableContainers = 3; // Start with max available containers
+                                    int setavailableContainers = autoScaleMinContainers; // Start with max available containers
 
-                                    for (int j = 0; j < 3; j++) { // Each instance gets 3 containers
+                                    for (int j = 0; j < autoScaleMinContainers; j++) { // Each instance gets autoScaleMinContainers containers
                                         if (containersNeeded == 0) break;
 
                                         int containerNumber = j + 1;
@@ -450,14 +453,14 @@ public class SchedulerService {
                                     // Create and save a new record in ContainerAvailability
                                     ContainerAvailability containerAvailability = new ContainerAvailability();
                                     containerAvailability.setInstanceId(instanceId);
-                                    containerAvailability.setMaxContainers(3);  // Default max containers per instance
-                                    containerAvailability.setAvailableContainers(3); // Initially, all are available
+                                    containerAvailability.setMaxContainers(autoScaleMinContainers);  // Default max containers per instance
+                                    containerAvailability.setAvailableContainers(autoScaleMinContainers); // Initially, all are available
                     
-                                    int setavailableContainers = 3; // Start with max available containers
+                                    int setavailableContainers = autoScaleMinContainers; // Start with max available containers
                                     // containerAvailabilityRepository.save(containerAvailability);
                                     log.info("Added new ContainerAvailability entry for instance {}", instanceId);
 
-                                    for (int j = 0; j < 3; j++) { // Each instance gets 3 containers
+                                    for (int j = 0; j < autoScaleMinContainers; j++) { // Each instance gets autoScaleMinContainers containers
                                         if (containersNeeded == 0) break;
 
                                         int containerNumber = j + 1; // Start from 1 since it's a new instance
@@ -480,7 +483,7 @@ public class SchedulerService {
                         //     String instanceId = newInstances.getString(i);
                         //     log.info("Starting new instance: {}", instanceId);
 
-                        //     for (int j = 0; j < 3; j++) { // Each instance gets 3 containers
+                        //     for (int j = 0; j < autoScaleMinContainers; j++) { // Each instance gets autoScaleMinContainers containers
                         //         if (containersNeeded == 0) break;
 
                         //         int containerNumber = j + 1; // Start from 1 since it's a new instance
@@ -490,8 +493,8 @@ public class SchedulerService {
 
                         //         ContainerAvailability newContainer = new ContainerAvailability();
                         //         newContainer.setInstanceId(instanceId);
-                        //         newContainer.setMaxContainers(3);
-                        //         newContainer.setAvailableContainers(3);
+                        //         newContainer.setMaxContainers(autoScaleMinContainers);
+                        //         newContainer.setAvailableContainers(autoScaleMinContainers);
                         //         containerAvailabilityRepository.save(newContainer);
 
                         //         containersNeeded--;
