@@ -71,6 +71,9 @@ public class TwinHandlerService {
     @Value("${scheduler.autoscale.imageName}")
     private String autoScaleImageName;
 
+    @Value("${endpoints.sendemail}")
+    private String sendEmailEndpoint;
+
     @Value("${scheduler.autostart.minShutdownInstances}")
     private int autoStartMinShutdownInstances;
 
@@ -126,7 +129,7 @@ public class TwinHandlerService {
                 ResponseEntity<String> response = restTemplate.postForEntity(new URI(healthCheckEndpoint), entity, String.class);
 
                 if (response.getStatusCode().is2xxSuccessful()) {
-                    log.error("The healthcheck passed for specified Instances {} statuscode: {}", instanceIds.toString(),response.getStatusCode());
+                    log.info("The healthcheck passed for specified Instances {} statuscode: {}", instanceIds.toString(),response.getStatusCode());
                     updateAllAppSessions(twinVersionId, new JSONArray(response.getBody()));
                     return;
                 } else {
@@ -383,6 +386,10 @@ public class TwinHandlerService {
                 // If no stopped instances are available, fallback to spawning a new instance
                 log.info("No stopped instances available, spawning a new one.");
                 JSONArray newInstanceArr = startInstances(1);  // Start one new instance
+
+                // Trigger Lambda to send Email Alert
+                triggerEmailNotification();
+
                 invokeTwinHealthCheck(newInstanceArr, twinVersionId);
                 byTwinVersionIdAndStatus = appSessionRepository.findByTwinVersionIdAndStatus(twinVersionId, Status.AVAILABLE);
                 if (!byTwinVersionIdAndStatus.isEmpty()) {
@@ -556,7 +563,6 @@ public class TwinHandlerService {
             if (responseArray.length() > 0) {
                 JSONObject instanceData = responseArray.getJSONObject(0);
                 String state = instanceData.getString("state");  // Extract the 'state' field from JSON
-                
                 return state;
             } else {
                 log.error("No state information found for instance {}", instanceId);
@@ -740,40 +746,60 @@ public class TwinHandlerService {
     }
 
     public JSONArray ShutdownPoolAdder(JSONArray instanceIds) throws JSONException {
-    JSONArray shutdownResults = new JSONArray();
+        JSONArray shutdownResults = new JSONArray();
 
-    for (int i = 0; i < instanceIds.length(); i++) {
-        String instanceId = instanceIds.getString(i);
+        for (int i = 0; i < instanceIds.length(); i++) {
+            String instanceId = instanceIds.getString(i);
 
-        try {
-            // Construct the Lambda API URI with the instanceId as a query parameter
-            String uri = String.format("%s?instanceId=%s", shutdownPoolEndpoint, instanceId);
+            try {
+                // Construct the Lambda API URI with the instanceId as a query parameter
+                String uri = String.format("%s?instanceId=%s", shutdownPoolEndpoint, instanceId);
 
-            // Send the GET request to the Lambda API
-            ResponseEntity<String> response = restTemplate.getForEntity(uri, String.class);
+                // Send the GET request to the Lambda API
+                ResponseEntity<String> response = restTemplate.getForEntity(uri, String.class);
 
-            if (response.getStatusCode().is2xxSuccessful()) {
-                // Parse the response body (assuming it's JSON)
-                String body = response.getBody();
-                log.info("Response from Shutdown Pool Adder Lambda for instance {}: {}", instanceId, body);
+                if (response.getStatusCode().is2xxSuccessful()) {
+                    // Parse the response body (assuming it's JSON)
+                    String body = response.getBody();
+                    log.info("Response from Shutdown Pool Adder Lambda for instance {}: {}", instanceId, body);
 
-                // Add the response JSON to the results array
-                shutdownResults.put(new JSONObject(body));
-            } else {
-                log.error("Shutdown Pool Adder requested for instance {}: {}", instanceId, response.getStatusCode());
+                    // Add the response JSON to the results array
+                    shutdownResults.put(new JSONObject(body));
+                } else {
+                    log.error("Shutdown Pool Adder requested for instance {}: {}", instanceId, response.getStatusCode());
+                    shutdownResults.put(new JSONObject()
+                            .put("instanceId", instanceId)
+                            .put("error", "Request failed with status code: " + response.getStatusCode()));
+                }
+            } catch (Exception e) {
+                log.error("Error while calling Shutdown Pool Adder Lambda for instance {}: {}", instanceId, e.getMessage());
                 shutdownResults.put(new JSONObject()
                         .put("instanceId", instanceId)
-                        .put("error", "Request failed with status code: " + response.getStatusCode()));
+                        .put("error", e.getMessage()));
+            }
+        }
+
+        return shutdownResults;
+    }
+
+    public URI getSendEmailURI() {
+        return UriComponentsBuilder.fromHttpUrl(sendEmailEndpoint).build().toUri();
+    }
+
+    public void triggerEmailNotification() {
+        try {
+            ResponseEntity<String> response = restTemplate.postForEntity(getSendEmailURI(), null, String.class);
+
+            if (response.getStatusCode().is2xxSuccessful()) {
+                log.info("Email Notification Triggered: " + response.getBody());
+            } else {
+                log.error("Failed to trigger Email Notification, Status: " + response.getStatusCode());
             }
         } catch (Exception e) {
-            log.error("Error while calling Shutdown Pool Adder Lambda for instance {}: {}", instanceId, e.getMessage());
-            shutdownResults.put(new JSONObject()
-                    .put("instanceId", instanceId)
-                    .put("error", e.getMessage()));
+            log.error("Exception while triggering Email Notification", e);
         }
     }
 
-    return shutdownResults;
-}
+
 
 }

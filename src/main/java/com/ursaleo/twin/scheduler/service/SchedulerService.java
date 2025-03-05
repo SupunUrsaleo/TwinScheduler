@@ -137,13 +137,17 @@ public class SchedulerService {
                     }
 
                     if(maxInstances == 0){
-                    log.info("No enough shutdown pool instances");
-                    JSONArray newInstances = twinHandlerService.startInstances(instancesToStart);
-                    log.info("Starting new instances. Instances Ids = {}", newInstances);
-                    // Add each new instance ID from the JSONArray to instancesForCheck
-                    for (int i = 0; i < newInstances.length(); i++) {
-                        instancesForCheck.put(newInstances.get(i));
-                    }
+                        log.info("No enough shutdown pool instances");
+
+                        // Trigger Email Notification
+                        twinHandlerService.triggerEmailNotification();
+
+                        JSONArray newInstances = twinHandlerService.startInstances(instancesToStart);
+                        log.info("Starting new instances. Instances Ids = {}", newInstances);
+                        // Add each new instance ID from the JSONArray to instancesForCheck
+                        for (int i = 0; i < newInstances.length(); i++) {
+                            instancesForCheck.put(newInstances.get(i));
+                        }
                     }
 
                 } catch (JSONException e) {
@@ -151,7 +155,7 @@ public class SchedulerService {
                 }
             }
 
-            // Add a delay before calling invokeTwinHealthCheck
+            // Add a delay before calling invokeTwinStoppedCheck
             try {
                 Thread.sleep(1000);  // Adjust delay as needed
             } catch (InterruptedException e) {
@@ -166,6 +170,15 @@ public class SchedulerService {
                 log.info("Shutdown Pool checked after {} Twin Autoscaling.", twinAvailability.getTwinVersionId());
             } catch (JSONException e) {
                 log.error("Error invoking twin stopped check: {}", e.getMessage());
+            }
+
+            // Add a delay before calling invokeTwinHealthCheck
+            try {
+                Thread.sleep(1000);  // Adjust delay as needed
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.error("Interrupted while waiting before health check.");
+                // No need to throw an exception if logging is sufficient
             }            
 
             // Invoke the twin health check with the merged instancesForCheckStopped
@@ -224,6 +237,15 @@ public class SchedulerService {
             } catch (JSONException e) {
                 log.error("Error starting instances from shutdown Pool. \n {}", e.getMessage());
             }
+        }
+
+        // Add a delay before calling invokeTwinStoppedCheck
+        try {
+            Thread.sleep(1000);  // Adjust delay as needed
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Interrupted while waiting before health check.");
+            // No need to throw an exception if logging is sufficient
         }
 
         // Invoke the twin stop check with the merged instancesForCheckStopped
