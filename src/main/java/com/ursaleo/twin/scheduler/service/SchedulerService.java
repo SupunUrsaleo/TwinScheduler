@@ -173,13 +173,13 @@ public class SchedulerService {
             }
 
             // Add a delay before calling invokeTwinHealthCheck
-            try {
-                Thread.sleep(1000);  // Adjust delay as needed
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                log.error("Interrupted while waiting before health check.");
-                // No need to throw an exception if logging is sufficient
-            }            
+            // try {
+            //     Thread.sleep(1000);  // Adjust delay as needed
+            // } catch (InterruptedException e) {
+            //     Thread.currentThread().interrupt();
+            //     log.error("Interrupted while waiting before health check.");
+            //     // No need to throw an exception if logging is sufficient
+            // }            
 
             // Invoke the twin health check with the merged instancesForCheckStopped
             twinHandlerService.invokeTwinHealthCheck(instancesForCheck, twinAvailability.getTwinVersionId()); 
@@ -240,13 +240,13 @@ public class SchedulerService {
         }
 
         // Add a delay before calling invokeTwinStoppedCheck
-        try {
-            Thread.sleep(1000);  // Adjust delay as needed
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("Interrupted while waiting before health check.");
-            // No need to throw an exception if logging is sufficient
-        }
+        // try {
+        //     Thread.sleep(1000);  // Adjust delay as needed
+        // } catch (InterruptedException e) {
+        //     Thread.currentThread().interrupt();
+        //     log.error("Interrupted while waiting before health check.");
+        //     // No need to throw an exception if logging is sufficient
+        // }
 
         // Invoke the twin stop check with the merged instancesForCheckStopped
         try {
